@@ -1,0 +1,50 @@
+<!--
+  Teleop scene: the robot + a floor + two draggable target cubes.
+
+  `setup-assets` copies this file INTO assets/unitree_g1/, next to g1.xml.
+  It must live there: MuJoCo resolves relative asset paths (g1.xml says
+  meshdir="assets") against the directory of the MAIN xml file, so including
+  g1.xml from any other directory breaks its mesh loading. (Lesson §2 shows
+  the exact error you get otherwise.)
+
+  The two mocap bodies are the heart of the whole project: a mocap body has
+  no joints and no physics - its pose is whatever you write into
+  data.mocap_pos / data.mocap_quat. Sources write it, the mouse can drag it,
+  and the IK chases it. The small "nose" box shows the target's orientation.
+-->
+<mujoco model="g1_teleop">
+  <include file="g1.xml"/>
+
+  <statistic center="0 0 0.75" extent="1.2"/>
+  <visual>
+    <global azimuth="140" elevation="-20"/>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+  </visual>
+
+  <asset>
+    <texture name="teleop_grid" type="2d" builtin="checker" width="256" height="256"
+             rgb1="0.21 0.23 0.26" rgb2="0.28 0.30 0.33"/>
+    <material name="teleop_floor" texture="teleop_grid" texrepeat="6 6" reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" type="plane" size="0 0 0.05" material="teleop_floor"/>
+
+    <!-- Left-hand target (red). contype/conaffinity 0: it collides with nothing. -->
+    <body name="left_target" mocap="true" pos="0.25 0.25 0.9">
+      <geom type="box" size="0.035 0.035 0.035" contype="0" conaffinity="0"
+            rgba="0.90 0.25 0.20 0.45"/>
+      <geom type="box" size="0.045 0.009 0.009" pos="0.055 0 0" contype="0" conaffinity="0"
+            rgba="0.90 0.25 0.20 0.9"/>
+    </body>
+
+    <!-- Right-hand target (green). -->
+    <body name="right_target" mocap="true" pos="0.25 -0.25 0.9">
+      <geom type="box" size="0.035 0.035 0.035" contype="0" conaffinity="0"
+            rgba="0.20 0.70 0.30 0.45"/>
+      <geom type="box" size="0.045 0.009 0.009" pos="0.055 0 0" contype="0" conaffinity="0"
+            rgba="0.20 0.70 0.30 0.9"/>
+    </body>
+  </worldbody>
+</mujoco>

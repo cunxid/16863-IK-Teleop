@@ -1,0 +1,32 @@
+[project]
+name = "ik-teleop"
+version = "0.1.0"
+description = "Teaching codebase: VR (PICO) teleoperation of a humanoid's upper body with differential IK in MuJoCo"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+    "mujoco>=4.0",
+    "numpy>=2.0",
+    "websockets>=17,<18",
+    "cryptography>=44",
+]
+
+[project.scripts]
+test-in-sim = "teleop.run_sim:main"
+test-in-real = "teleop.run_real:main"
+setup-assets = "teleop.tools.setup_assets:main"
+check-lesson = "teleop.tools.check_lesson:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# uv's own build backend: src layout + package data (the WebXR html) work
+# without extra include rules. module-name: the import name is `teleop`,
+# shorter than the project name.
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "teleop"

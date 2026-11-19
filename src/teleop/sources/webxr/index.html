@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<!--
+  The headset side of the Pico bridge (lesson §8).
+
+  This page runs in the PICO headset's built-in browser. It does two things:
+    1. starts a WebXR "immersive-vr" session to read the controllers' 6-DoF
+       poses and buttons, ~72 times per second;
+    2. streams them as small JSON messages over a WebSocket to the Python
+       server that served this very page (same host, same port).
+
+  No build step, no frameworks: this file is all there is.
+  (WebXR only works on HTTPS — that's why the server uses a self-signed
+  certificate and you must tap through the browser warning once.)
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ik-teleop · Pico controller bridge</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #111; color: #eee;
+           display: flex; flex-direction: column; align-items: center; gap: 1rem;
+           padding: 2rem; text-align: center; }
+    button { font-size: 1.6rem; padding: 1rem 3rem; border-radius: 12px; border: 0;
+             background: #2f81f7; color: white; }
+    button:disabled { background: #444; }
+    #status { color: #9ecbff; min-height: 2em; }
+    .hint { color: #888; max-width: 34em; }
+  </style>
+</head>
+<body>
+  <h1>ik-teleop controller bridge</h1>
+  <button id="enter">Enter VR</button>
+  <p id="status">Connecting to the server…</p>
+  <p class="hint">Once in VR: <b>hold the grip button (side of the controller)</b>
+     and the robot's hand follows your motion; release and it freezes.
+     Green view = currently grabbing. Exit VR with the headset's system button.</p>
+
+<script>
+"use strict";
+
+const statusEl = document.getElementById("status");
+const enterBtn = document.getElementById("enter");
+const show = (msg) => { statusEl.textContent = msg; };
+
+/* ---------------------------------------------------------- WebSocket --- */
+/* The Python server that served this page also accepts WebSocket upgrades
+   on the same address, so the URL is just "this page, but wss://". */
+let ws = null;
+function connect() {
+  ws = new WebSocket(`wss://${location.host}/ws`);
+  ws.onopen = () => show("Server connected ✓ — tap the button above to enter VR");
+  ws.onclose = () => { show("Disconnected from server; retrying in 2 s…"); setTimeout(connect, 2000); };
+  ws.onerror = () => ws.close();
+}
+connect();
+
+/* ------------------------------------------------------------- WebXR --- */
+/* Feature-detect up front so students see a clear message, not a mystery. */
+(async () => {
+  if (!navigator.xr || !(await navigator.xr.isSessionSupported("immersive-vr"))) {
+    enterBtn.disabled = true;
+    show("This browser does not support WebXR immersive-vr (use the Pico's built-in browser, and make sure the address is https://)");
+  }
+})();
+
+enterBtn.onclick = async () => {
+  try {
+    // "local-floor": poses are measured from the floor under where you
+    // started — a stable, human-sized reference frame.
+    const session = await navigator.xr.requestSession("immersive-vr", {
+      requiredFeatures: ["local-floor"],
+    });
+    enterBtn.disabled = true;
+    run(session);
+  } catch (err) {
+    show("Failed to enter VR: " + err);
+  }
+};
+
+async function run(session) {
+  // An immersive session must have a WebGL layer, even though we draw almost
+  // nothing. We clear the screen to a color: dark = idle, green = gripping.
+  const canvas = document.createElement("canvas");
+  const gl = canvas.getContext("webgl", { xrCompatible: true });
+  session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+
+  const refSpace = await session.requestReferenceSpace("local-floor");
+  // Note: some headset browsers can't re-enter VR after a session ends
+  // without a page reload, so we offer one instead of a broken button.
+  session.onend = () => { show("Left VR — reloading the page…"); setTimeout(() => location.reload(), 800); };
+
+  session.requestAnimationFrame(function onFrame(time, frame) {
+    session.requestAnimationFrame(onFrame); // keep the loop going
+
+    // 1. Read both controllers.
+    const hands = { left: null, right: null };
+    let gripping = false;
+    for (const input of session.inputSources) {
+      if (!input.gripSpace || !input.gamepad) continue;
+      const pose = frame.getPose(input.gripSpace, refSpace);
+      if (!pose) continue; // controller not tracked this frame
+
+      const p = pose.transform.position;     // meters; x right, y up, z backward
+      const q = pose.transform.orientation;  // quaternion, xyzw order (!)
+      const buttons = input.gamepad.buttons; // xr-standard: [0]=trigger [1]=grip
+      const grip = buttons.length > 1 && buttons[1].pressed;
+      gripping = gripping || grip;
+
+      hands[input.handedness] = {
+        pos: [p.x, p.y, p.z],
+        quat_xyzw: [q.x, q.y, q.z, q.w],
+        grip: grip,
+        trigger: buttons.length > 0 ? buttons[0].value : 0,
+      };
+    }
+
+    // 2. Stream to Python (time in seconds; the server only keeps the latest).
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ t: time / 1000, left: hands.left, right: hands.right }));
+    }
+
+    // 3. Visual feedback: clear both eyes to a single color.
+    const layer = session.renderState.baseLayer;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+    if (gripping) gl.clearColor(0.05, 0.35, 0.12, 1); // green: robot is following
+    else gl.clearColor(0.02, 0.02, 0.05, 1);          // dark: released
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  });
+}
+</script>
+</body>
+</html>
