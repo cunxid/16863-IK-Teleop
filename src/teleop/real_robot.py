@@ -8,9 +8,9 @@ Implementations:
 
 * ``DryRunRobot`` — the default. No hardware: it just prints what *would*
   be sent, at a readable rate. `uv run test-in-real` therefore always works.
-* ``FaunaRobot``  — the slot for the real Fauna robot. The methods raise
-  ``NotImplementedError`` with instructions; filling them in with the
-  vendor SDK is lesson §9's exercise. Nothing else in the codebase changes.
+* ``BoosterK1Robot`` — the real Booster K1 driver, in its own module
+  ``booster_k1.py``: the robot stands and balances itself while we command
+  only the arms. Nothing else in the codebase knows the difference.
 """
 
 from __future__ import annotations
@@ -61,38 +61,22 @@ class DryRunRobot(RealRobot):
         print(f"[dry-run] disconnected after {self._n_sent} commands")
 
 
-class FaunaRobot(RealRobot):
-    """Where the real Fauna robot plugs in (see lesson §9).
-
-    To bring the real robot up, implement the three methods with the vendor
-    SDK and map MuJoCo joint names → motor ids in ``JOINT_TO_MOTOR``.
-    Keep the safety order: connect in compliant/low-gain mode, ramp gains up,
-    and make disconnect() stop motion even if called mid-stream.
-    """
-
-    JOINT_TO_MOTOR: dict[str, int] = {
-        # "left_shoulder_pitch_joint": 0,   # ← fill in from the Fauna SDK docs
-    }
-
-    def connect(self) -> None:
-        raise NotImplementedError(
-            "FaunaRobot is a teaching stub. Implement connect/send/disconnect "
-            "with the Fauna SDK (lesson §9), or run with --robot dryrun."
-        )
-
-    def send_joint_targets(self, targets: dict[str, float]) -> None:
-        raise NotImplementedError
-
-    def disconnect(self) -> None:
-        pass  # a stub never moved anything, so there is nothing to stop
+ROBOT_NAMES = ("dryrun", "k1")
 
 
-ROBOT_NAMES = ("dryrun", "fauna")
-
-
-def make_robot(name: str) -> RealRobot:
+def make_robot(
+    name: str,
+    joint_limits: dict[str, tuple[float, float]] | None = None,
+    stand: bool = False,
+    iface: str = "",
+) -> RealRobot:
+    """Build a robot backend. The k1-only options are harmless for dryrun."""
     if name == "dryrun":
         return DryRunRobot()
-    if name == "fauna":
-        return FaunaRobot()
+    if name == "k1":
+        # Imported here, not at the top: booster_k1 imports RealRobot from
+        # this module, so a top-level import would be circular.
+        from teleop.booster_k1 import BoosterK1Robot
+
+        return BoosterK1Robot(joint_limits=joint_limits, stand=stand, iface=iface)
     raise ValueError(f"unknown robot {name!r}; pick one of {ROBOT_NAMES}")

@@ -2,7 +2,9 @@
 
 These need the downloaded model; run ``uv run setup-assets`` first.
 They are the closest thing to a proof that the math in ik.py is right:
-ask for a reachable pose, step the IK, and measure that we actually get there.
+ask for a reachable point, step the IK, and measure that we actually get
+there. The K1 tracks position only (4-DoF arms — lesson §5's DoF budget),
+so orientation assertions check that target rotations are *ignored*.
 """
 
 import math
@@ -10,13 +12,13 @@ import math
 import numpy as np
 import pytest
 
-from teleop import ik, quat
+from teleop import ik
 from teleop.robot import SPECS, Robot
 from tests.test_quat import axis_angle
 
-G1 = SPECS["g1"]
+K1 = SPECS["k1"]
 pytestmark = pytest.mark.skipif(
-    not G1.scene_path().exists(),
+    not K1.scene_path().exists(),
     reason="robot model missing — run `uv run setup-assets` first",
 )
 
@@ -25,7 +27,7 @@ DT = 1.0 / 60.0
 
 @pytest.fixture()
 def robot() -> Robot:
-    r = Robot(G1)
+    r = Robot(K1)
     r.reset()
     return r
 
@@ -46,7 +48,7 @@ def test_tracks_at_rest(robot: Robot):
 
 def test_reaches_nearby_position(robot: Robot):
     frame = robot.targets()
-    frame.left.pos += np.array([0.06, -0.04, 0.05])
+    frame.left.pos += np.array([0.05, -0.03, 0.06])
     robot.set_targets(frame)
 
     errors = run_ik(robot, 400)
@@ -55,21 +57,21 @@ def test_reaches_nearby_position(robot: Robot):
     assert errors["right"] < 1e-4
 
 
-def test_tracks_orientation(robot: Robot):
+def test_target_rotation_is_ignored(robot: Robot):
+    """Position-only arm: spinning the target must not disturb the tracking."""
     frame = robot.targets()
-    frame.left.quat = quat.mul(axis_angle([0, 0, 1], math.radians(30)), frame.left.quat)
+    frame.left.pos += np.array([0.05, 0.0, 0.05])
+    frame.left.quat = axis_angle([0, 0, 1], math.radians(90))  # wild rotation
     robot.set_targets(frame)
 
-    run_ik(robot, 400)
-    err_angle = np.linalg.norm(quat.error_world(robot.target_pose(robot.arms["left"]).quat,
-                                                robot.ee_pose(robot.arms["left"]).quat))
-    assert err_angle < math.radians(3), f"orientation error {math.degrees(err_angle):.1f}° too large"
+    errors = run_ik(robot, 400)
+    assert errors["left"] < 0.005, "a rotated target must still be reached in position"
 
 
 def test_unreachable_target_stays_stable(robot: Robot):
     """Ask for the impossible: no NaNs, no limit violations, graceful straining."""
     frame = robot.targets()
-    frame.left.pos += np.array([0.8, 0.0, 0.8])  # far outside the arm's reach
+    frame.left.pos += np.array([0.5, 0.0, 0.5])  # far outside the arm's ~0.39 m reach
     robot.set_targets(frame)
 
     run_ik(robot, 300)
@@ -82,7 +84,7 @@ def test_unreachable_target_stays_stable(robot: Robot):
 
 def test_respects_velocity_cap(robot: Robot):
     frame = robot.targets()
-    frame.left.pos += np.array([0.3, 0.3, 0.0])
+    frame.left.pos += np.array([0.2, 0.2, 0.0])
     robot.set_targets(frame)
 
     settings = ik.IKSettings()

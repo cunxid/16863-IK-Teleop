@@ -1,7 +1,7 @@
 # ik-teleop — VR teleoperation of a humanoid's upper body (a teaching project)
 
-Move a PICO VR controller; the robot's hand follows — via differential inverse
-kinematics (IK), with MuJoCo as the backend.
+Move a PICO VR controller; the **Booster K1** humanoid's hand follows — via
+differential inverse kinematics (IK), with MuJoCo as the backend.
 
 This is a **teaching project**: the code is written for students with no
 robotics background, and every file maps to a section of the lesson,
@@ -18,7 +18,7 @@ Requires [uv](https://docs.astral.sh/uv/)
 
 ```bash
 uv sync             # 1. install everything (creates the virtualenv automatically)
-uv run setup-assets # 2. download the robot model (Unitree G1, from mujoco_menagerie)
+uv run setup-assets # 2. download the robot model (Booster K1, official booster_assets)
 uv run test-in-sim  # 3. a MuJoCo window opens: both hands draw a figure-8 ✨
 ```
 
@@ -43,12 +43,19 @@ re-position your arm comfortably between grabs).
 ```bash
 uv run test-in-real                      # default dry-run: prints the joint commands it would send
 uv run test-in-real --source trajectory  # rehearse the real-robot pipeline without a headset
-uv run test-in-real --robot fauna        # the real Fauna robot (implement the SDK hookup per lesson §9)
+uv sync --extra real                     # install Booster's SDK (hardware-only extra, Linux)
+uv run test-in-real --robot k1 --stand   # the real K1: stand up, balance, then VR-drive the arms
 ```
+
+With `--robot k1` the robot keeps balancing itself — the driver enables
+`UpperBodyCustomControl` and commands only the 8 arm motors; `--stand` first
+runs the stand-up sequence (prepare pose → balance controller). See lesson §9.
 
 The real-robot loop always keeps four safety layers: joint limits, per-joint
 speed caps, the grip deadman switch, and a stale-VR-data watchdog (see
-`src/teleop/run_real.py`).
+`src/teleop/run_real.py`). Two gates are enforced up front: a robot other
+than `dryrun` requires `--source pico` (the only source with a deadman), and
+`--rate` values low enough to destabilize the IK integration are rejected.
 
 ## Code map
 
@@ -61,13 +68,15 @@ speed caps, the grip deadman switch, and a stale-VR-data watchdog (see
 | `src/teleop/mapping.py` | VR→robot frame conversion + the clutch | §8 |
 | `src/teleop/run_sim.py` | `test-in-sim` entry point | §6 |
 | `src/teleop/run_real.py` | `test-in-real` entry point | §9 |
-| `src/teleop/real_robot.py` | hardware interface (DryRun / Fauna stub) | §9 |
+| `src/teleop/real_robot.py` | hardware interface (DryRun default) | §9 |
+| `src/teleop/booster_k1.py` | real K1 driver: robot balances, we drive the arms | §9 |
 
 ## Development
 
 ```bash
 uv run pytest        # unit tests (pure math + IK convergence; all windowless)
 uv run check-lesson  # verify every source file has a lesson walkthrough (this repo's hard rule)
+uv run render-videos # write demo MP4s into video/ (offscreen — works without a display)
 ```
 
 Contributor rules live in [AGENTS.md](AGENTS.md) — the most important one:
@@ -75,14 +84,17 @@ Contributor rules live in [AGENTS.md](AGENTS.md) — the most important one:
 
 ## FAQ
 
-- **Which robot?** The target machine is Fauna Robotics' **Sprout** (6-DoF
-  arms + 1-DoF grippers). Its official URDF/MJCF ships only with the
-  login-gated Fauna SDK, so the demo uses the Unitree G1 (mujoco_menagerie,
-  BSD-3, 7-DoF arms) — another dual-arm humanoid — as a stand-in. Everything
-  robot-specific lives in one `RobotSpec` in `robot.py`; once you have the
-  Sprout model, add a spec and switch.
+- **Which robot?** The **Booster K1** (0.95 m, 22 DoF), using Booster
+  Robotics' official MuJoCo model from `BoosterRobotics/booster_assets`
+  (BSD-3) — the sim drives the same robot you deploy on. Its arms are 4-DoF
+  (no wrists), so the IK tracks hand *position* only (lesson §5 explains the
+  DoF budget). Everything robot-specific lives in one `RobotSpec` in
+  `robot.py`; a different robot is one new spec.
 - **Browser says "not secure"?** WebXR requires HTTPS; on a LAN we use a
   self-signed certificate — tap "Advanced → Proceed". The certificate is
   generated into `.certs/` on first run.
 - **No window on Linux?** The viewer needs a display/desktop environment; on a
   server use `--headless`.
+- **macOS?** MuJoCo's interactive viewer must run under Apple's `mjpython`
+  launcher: `uv run mjpython -m teleop.run_sim`. (`--headless` and all tests
+  work under plain Python.)

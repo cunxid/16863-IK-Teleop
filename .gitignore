@@ -12,7 +12,10 @@ wheels/
 MUJOCO_LOG.TXT
 
 # Robot model files downloaded by `uv run setup-assets` (not committed; see AGENTS.md)
-assets/unitree_g1/
+assets/booster_k1/
 
 # TLS certificates generated at runtime for the WebXR bridge
 .certs/
+
+# Rendered demo videos (`uv run render-videos`)
+video/

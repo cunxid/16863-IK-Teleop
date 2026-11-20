@@ -22,6 +22,6 @@ SOFTWARE.
 
 ---
 
-Note: the robot model (Unitree G1, from google-deepmind/mujoco_menagerie) is
-downloaded separately by `uv run setup-assets` and keeps its own license,
-which is copied next to the downloaded files.
+Note: the robot model (Booster K1, from BoosterRobotics/booster_assets) is
+downloaded separately by `uv run setup-assets` and keeps its own license
+(BSD 3-Clause), which is copied next to the downloaded files.

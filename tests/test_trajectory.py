@@ -4,11 +4,11 @@ import numpy as np
 
 from teleop.mapping import Pose
 from teleop.sources import TargetFrame
-from teleop.sources.trajectory import LIFT_OFFSET, LIFT_PITCH, TrajectorySource, smoothstep
-from tests.test_quat import IDENTITY, axis_angle
+from teleop.sources.trajectory import LIFT_OFFSET, TrajectorySource, smoothstep
+from tests.test_quat import IDENTITY
 
-LEFT0 = np.array([0.0, 0.24, 0.64])
-RIGHT0 = np.array([0.0, -0.24, 0.64])
+LEFT0 = np.array([0.18, 0.20, 0.45])
+RIGHT0 = np.array([0.18, -0.20, 0.45])
 
 
 def make_source(amplitude=0.1, period=4.0, ramp_time=2.0) -> TrajectorySource:
@@ -29,10 +29,9 @@ def test_lift_in_reaches_the_working_center():
     frame = make_source(ramp_time=2.0).get_targets(2.0)  # ramp done, u = 0
     assert np.allclose(frame.left.pos, LEFT0 + LIFT_OFFSET)
     assert np.allclose(frame.right.pos, RIGHT0 + LIFT_OFFSET)
-    # ...with the palms pitched forward by LIFT_PITCH (both hands alike).
-    expected = axis_angle([0, 1, 0], LIFT_PITCH)
-    assert np.allclose(frame.left.quat, expected, atol=1e-9)
-    assert np.allclose(frame.right.quat, expected, atol=1e-9)
+    # Orientation is never touched (the K1 tracks position only).
+    assert np.allclose(frame.left.quat, IDENTITY)
+    assert np.allclose(frame.right.quat, IDENTITY)
 
 
 def test_smoothstep_shape():

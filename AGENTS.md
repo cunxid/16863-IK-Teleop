@@ -2,10 +2,12 @@
 
 ## What this project is
 
-A **teaching codebase** that teleoperates the upper body of a humanoid
-robot with PICO VR controllers: you move the controller, the robot's hand
-follows, via differential inverse kinematics (IK). MuJoCo is the simulation
-backend; the same IK output can be streamed to a real robot.
+A **teaching codebase** that teleoperates the upper body of the **Booster
+K1** humanoid with PICO VR controllers: you move the controller, the robot's
+hand follows, via differential inverse kinematics (IK). MuJoCo is the
+simulation backend; the same IK output can be streamed to the real robot.
+The K1's arms are 4-DoF, so the IK tracks hand *position* only
+(`RobotSpec.track_orientation = False`).
 
 The audience is **students with no robotics background**. Every design
 decision trades cleverness for readability.
@@ -63,7 +65,8 @@ src/teleop/
   ik.py           # differential IK: pose error → joint velocities → qpos
   mapping.py      # VR→robot frame conversion + clutch (relative mapping)
   sources/        # TargetSource implementations: trajectory, mouse, pico (WebXR)
-  real_robot.py   # RealRobot interface + DryRunRobot + FaunaRobot stub
+  real_robot.py   # RealRobot interface + DryRunRobot (default) + robot factory
+  booster_k1.py   # real K1 driver: robot stands/balances itself (UpperBodyCustomControl), we command only the arms
   run_sim.py      # entry point: test-in-sim
   run_real.py     # entry point: test-in-real
   tools/          # setup_assets (download robot model), check_lesson
@@ -73,40 +76,54 @@ src/teleop/
 
 ```bash
 uv sync                       # install everything (incl. dev group)
-uv run setup-assets           # download the robot model (mujoco_menagerie G1)
+uv run setup-assets           # download the robot model (Booster K1, booster_assets)
 uv run test-in-sim            # demo: scripted trajectory in the MuJoCo viewer
 uv run test-in-sim --source mouse   # drag the red/green target cubes yourself
 uv run test-in-sim --source pico    # VR: open the printed URL in the Pico browser
 uv run test-in-sim --headless       # no GUI; prints tracking error (CI/servers)
 uv run test-in-real           # stream IK joint targets to a robot (default: dry-run)
+uv sync --extra real          # add Booster's SDK (hardware only; Linux wheels)
+uv run test-in-real --robot k1 --stand   # real K1: stand up, balance, then VR-drive the arms
 uv run pytest                 # unit tests
 uv run check-lesson           # enforce the Lesson Rule
+uv run render-videos          # demo MP4s into video/ (offscreen, EGL; no display)
 ```
 
 ## Robot model policy
 
-- The teleop target is Fauna Robotics' **"Sprout"** (6-DoF arms, 1-DoF
-  grippers); its URDF/MJCF exists but ships only inside Fauna's login-gated
-  SDK, so the demo uses the **Unitree G1** from
-  `google-deepmind/mujoco_menagerie` (BSD-3, 7-DoF arms) as a stand-in with
-  the same dual-arm humanoid topology. It is downloaded by
-  `uv run setup-assets` into `assets/unitree_g1/` and is **never committed**
-  (see .gitignore).
+- The robot is the **Booster K1**, using Booster Robotics' official MuJoCo
+  model from `BoosterRobotics/booster_assets` (BSD-3-Clause) — sim and real
+  are the same machine. It is downloaded by `uv run setup-assets` into
+  `assets/booster_k1/` and is **never committed** (see .gitignore).
+- K1 names are copied **verbatim**, including the vendor's `aa` prefixes
+  (`aaleft_shoulder_pitch_joint`); never "normalize" them. The model ships
+  no keyframe — the home pose is authored in the `RobotSpec`.
 - Everything robot-specific lives in **one `RobotSpec` object** in
   `src/teleop/robot.py` (XML path, arm joint names, end-effector bodies,
-  keyframe name). To swap in the real Fauna model: add a `RobotSpec` for it
-  and pass `--robot-spec`. No other file may hard-code robot names.
+  home pose, whether orientation is tracked). To use another robot: add a
+  `RobotSpec` and pass `--robot-spec`. No other file may hard-code robot
+  names.
 
 ## Real-robot safety invariants (never remove these)
 
 `run_real.py` must always keep: joint-limit clamping, per-tick joint velocity
 clamping, a deadman (targets only move while the grip button is held), and a
-watchdog (stale VR data ⇒ hold position). A stub robot (`DryRunRobot`) is the
-default so `test-in-real` is always runnable without hardware.
+watchdog (stale VR data ⇒ hold position). It must also keep its argparse
+gates: deadman-free sources (anything but `pico`) are allowed only with
+`--robot dryrun`, and `--rate` values in the IK's unstable zone (gain·dt ≥ 2)
+are rejected, and `--stand` (a physical stand-up) requires `--robot k1`. A
+print-only robot (`DryRunRobot`) is the default so `test-in-real` is always
+runnable without hardware. The K1 driver (`booster_k1.py`) adds its own
+invariants: it re-clamps targets to joint limits (never trust the caller),
+soft-starts by blending from the measured arm pose, commands only the 8 arm
+motors (zero gains elsewhere ⇒ the onboard controller keeps balancing), and
+on `disconnect()` hands the arms back via `UpperBodyCustomControl(False)` —
+never damping mode, which would drop a standing robot.
 
 ## Testing
 
-- `tests/` holds fast, headless unit tests (no viewer, no network).
+- `tests/` holds fast, headless unit tests (no viewer; the only network use
+  is the localhost-only Pico bridge test).
 - IK and mapping math must stay covered: if you touch `ik.py`, `quat.py` or
   `mapping.py`, run `uv run pytest` and extend tests for new behavior.
 - `uv run test-in-sim --headless` is the end-to-end smoke test; it exits

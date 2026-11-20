@@ -35,7 +35,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Teleop the simulated robot (viewer or headless).")
     parser.add_argument("--source", choices=SOURCE_NAMES, default="trajectory",
                         help="where targets come from (default: scripted figure-8)")
-    parser.add_argument("--robot-spec", choices=sorted(SPECS), default="g1",
+    parser.add_argument("--robot-spec", choices=sorted(SPECS), default="k1",
                         help="which robot model to load")
     parser.add_argument("--scale", type=float, default=1.0,
                         help="pico mode: meters of hand motion per meter of controller motion")
@@ -61,6 +61,9 @@ def main() -> None:
 
 def run_viewer(robot: Robot, source: TargetSource) -> None:
     dt = 1.0 / FPS
+    if sys.platform == "darwin" and getattr(mujoco.viewer, "_MJPYTHON", None) is None:
+        sys.exit("macOS: MuJoCo's viewer must run under the mjpython launcher — "
+                 "use `uv run mjpython -m teleop.run_sim`, or add --headless")
     print("viewer: double-click a target cube to select it, then "
           "Ctrl+right-drag moves it, Ctrl+left-drag rotates it "
           "(add Shift for the horizontal plane). Close the window to quit.")
@@ -87,8 +90,13 @@ def run_viewer(robot: Robot, source: TargetSource) -> None:
 def run_headless(robot: Robot, source: TargetSource, duration: float) -> None:
     """Same loop without a window — the end-to-end smoke test (CI, servers)."""
     dt = 1.0 / FPS
+    n_frames = int(duration * FPS)
+    if n_frames < 1:
+        sys.exit(f"--duration {duration} s is shorter than one frame (1/{FPS:.0f} s); "
+                 f"give the arms some time to move (note: in test-in-real, 0 means "
+                 f"'run until Ctrl+C' — not here)")
     errors: dict[str, float] = {}
-    for i in range(int(duration * FPS)):
+    for i in range(n_frames):
         t = i * dt
         targets = source.get_targets(t)
         if targets is not None:

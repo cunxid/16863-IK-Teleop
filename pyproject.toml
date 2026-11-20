@@ -12,14 +12,25 @@ dependencies = [
     "cryptography>=44",
 ]
 
+# Hardware-only extra: Booster's SDK ships Linux-only binary wheels, so it is
+# not a core dependency — install with `uv sync --extra real` (lesson §9).
+[project.optional-dependencies]
+real = [
+    "booster_robotics_sdk_python>=1.6.3 ; sys_platform == 'linux'",
+]
+
 [project.scripts]
 test-in-sim = "teleop.run_sim:main"
 test-in-real = "teleop.run_real:main"
 setup-assets = "teleop.tools.setup_assets:main"
 check-lesson = "teleop.tools.check_lesson:main"
+render-videos = "teleop.tools.render_videos:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "imageio[ffmpeg]>=2.37",
+    "pytest>=8",
+]
 
 # uv's own build backend: src layout + package data (the WebXR html) work
 # without extra include rules. module-name: the import name is `teleop`,

@@ -69,9 +69,10 @@ MuJoCo + differential inverse kinematics + WebXR</p>
 
 <p>This course walks you through <strong>building a VR teleoperation system that
 actually works</strong>: put on a PICO headset, squeeze the grip button on the
-controller, and the humanoid robot's hands — in simulation, and later on the
-real machine — precisely mirror your hand motion. More importantly, by the end
-you can explain why every line of code is the way it is.</p>
+controller, and the <strong>Booster K1</strong> humanoid's hands — in
+simulation, and later on the real machine — mirror your hand motion. More
+importantly, by the end you can explain why every line of code is the way it
+is.</p>
 
 <svg class="pipeline" viewBox="0 0 980 240" role="img" aria-label="System pipeline diagram">
   <defs>
@@ -142,7 +143,7 @@ updating the lesson and the check fails</strong> (the rule is in AGENTS.md).</p>
 <table>
 <tr><th>File</th><th>One-line job</th><th>Section</th></tr>
 <tr><td><code class="file">pyproject.toml</code></td><td>Project definition: deps, four command entry points, uv_build</td><td><a href="#s1">§1</a></td></tr>
-<tr><td><code class="file">src/teleop/tools/setup_assets.py</code></td><td>Download the Unitree G1 model, install the scene</td><td><a href="#s2">§2</a></td></tr>
+<tr><td><code class="file">src/teleop/tools/setup_assets.py</code></td><td>Download the Booster K1 model, install the scene</td><td><a href="#s2">§2</a></td></tr>
 <tr><td><code class="file">assets/scene_teleop.xml</code></td><td>Scene: robot + floor + two mocap target cubes</td><td><a href="#s2">§2</a>, <a href="#s4">§4</a></td></tr>
 <tr><td><code class="file">src/teleop/robot.py</code></td><td>Load model, resolve joint indices, read/write targets, reset</td><td><a href="#s2">§2</a>, <a href="#s3">§3</a></td></tr>
 <tr><td><code class="file">src/teleop/quat.py</code></td><td>Quaternion helpers (the repo's only math library)</td><td><a href="#s3">§3</a></td></tr>
@@ -153,11 +154,13 @@ updating the lesson and the check fails</strong> (the rule is in AGENTS.md).</p>
 <tr><td><code class="file">src/teleop/sources/webxr/index.html</code></td><td>The page opened in the headset: read controllers, stream WebSocket</td><td><a href="#s8">§8</a></td></tr>
 <tr><td><code class="file">src/teleop/sources/pico.py</code></td><td>PC-side server: receive poses, run the clutch, emit targets</td><td><a href="#s8">§8</a></td></tr>
 <tr><td><code class="file">src/teleop/run_real.py</code></td><td><code>test-in-real</code> entry point: same brain + a real robot</td><td><a href="#s9">§9</a></td></tr>
-<tr><td><code class="file">src/teleop/real_robot.py</code></td><td>Hardware interface: DryRun default / Fauna stub</td><td><a href="#s9">§9</a></td></tr>
+<tr><td><code class="file">src/teleop/real_robot.py</code></td><td>Hardware interface: DryRun default + robot factory</td><td><a href="#s9">§9</a></td></tr>
+<tr><td><code class="file">src/teleop/booster_k1.py</code></td><td>The real K1 driver: robot balances itself, we drive the arms</td><td><a href="#s9">§9</a></td></tr>
 <tr><td><code class="file">src/teleop/tools/check_lesson.py</code></td><td>The checker that keeps code and lesson in sync</td><td><a href="#s0">§0</a></td></tr>
+<tr><td><code class="file">src/teleop/tools/render_videos.py</code></td><td>Render demo MP4s offscreen (no display needed)</td><td><a href="#s6">§6</a></td></tr>
 </table>
 
-<p>There is also <code>tests/</code> (29 windowless unit tests) and three
+<p>There is also <code>tests/</code> (31 windowless unit tests) and three
 <code>__init__.py</code> files with no teaching content.
 <code class="file">src/teleop/tools/check_lesson.py</code> itself is ~60 lines:
 it enumerates the files above and fails unless each path string appears in this
@@ -189,6 +192,9 @@ uv run test-in-sim  # a window opens: the robot lifts its hands, draws a figure-
     "cryptography&gt;=44",   # the self-signed HTTPS certificate of §8
 ]
 
+[project.optional-dependencies]  # hardware-only extra: `uv sync --extra real` (§9)
+real = ["booster_robotics_sdk_python&gt;=1.6.3 ; sys_platform == 'linux'"]
+
 [project.scripts]        # commands runnable as `uv run <name>`; right side is module:function
 test-in-sim  = "teleop.run_sim:main"
 test-in-real = "teleop.run_real:main"
@@ -200,9 +206,12 @@ requires = ["uv_build&gt;=0.12,&lt;0.13"]
 build-backend = "uv_build"</code></pre>
 
 <div class="box note"><span class="tag">Convention</span>
-Only 4 dependencies, and <code>websockets</code> / <code>cryptography</code> are
+Only 4 core dependencies, and <code>websockets</code> / <code>cryptography</code> are
 imported lazily — only when you actually use the VR mode. In a teaching repo
-every dependency must be able to justify its existence.
+every dependency must be able to justify its existence. Booster's robot SDK
+(binary wheels, Linux-only, useless without a robot) is therefore an
+<em>optional extra</em>: nobody pays for it until §9, where
+<code>uv sync --extra real</code> pulls it in.
 <code>uv.lock</code> is committed to git: every student's <code>uv sync</code>
 resolves to identical versions.</div>
 
@@ -212,64 +221,64 @@ resolves to identical versions.</div>
 <h3>2.1 Where robots come from: URDF, MJCF, and our choice</h3>
 <p>A robot's "body file" (link sizes, joint axes, limits, display meshes) is
 usually a <strong>URDF</strong> (the ROS-world standard) or an
-<strong>MJCF</strong> (MuJoCo's own XML). MuJoCo can load URDF directly, but
-URDF has no concept of actuators, keyframes, or sites, so the community
-maintains <a href="https://github.com/google-deepmind/mujoco_menagerie">mujoco_menagerie</a>
-— a zoo of curated, high-quality MJCF models.</p>
+<strong>MJCF</strong> (MuJoCo's own XML). Booster Robotics publishes both for
+the K1 in its official asset repository,
+<a href="https://github.com/BoosterRobotics/booster_assets">booster_assets</a>
+(BSD-3-Clause) — so the simulation drives <em>the same robot you deploy on</em>,
+no stand-in needed.</p>
 
-<p>The real target of this project is Fauna Robotics' humanoid
-<strong>Sprout</strong> (6-DoF arms + 1-DoF grippers; systems paper
-arXiv:2601.18963). Its URDF/MJCF ships only inside the login-gated Fauna SDK —
-<em>there is no public download</em>. So the course uses the
-<strong>Unitree G1</strong> from the menagerie (BSD-3 license, 7-DoF arms) as a
-stand-in with the same dual-arm humanoid topology. Swapping in Sprout later
-means adding one <code>RobotSpec</code> in
-<code class="file">src/teleop/robot.py</code> (see 2.4) — nothing else changes.</p>
+<p>We use the MJCF, <code>K1_22dof.xml</code>, and it's worth knowing why: MuJoCo
+<em>can</em> load the shipped URDF directly, but the URDF import silently drops
+the floating base joint (the robot gets welded to the world) and carries no
+actuators or keyframes — MJCF is simply the more complete description for
+MuJoCo work. The K1 in numbers: 0.95 m, ~19.7 kg, 22 actuated joints =
+2 head + 4 per arm + 6 per leg; <strong>no waist, no wrists, no hands</strong>.
+Hold onto that "4 per arm" — it reshapes the IK in §5.</p>
 
 <h3>2.2 Downloading the model: src/teleop/tools/setup_assets.py</h3>
-<p>38 MB of mesh files don't belong in git, so <code>uv run setup-assets</code>
-downloads them. It uses git's sparse checkout to fetch only the
-<code>unitree_g1/</code> folder, not the whole zoo:</p>
+<p>21 MB of mesh files don't belong in git, so <code>uv run setup-assets</code>
+downloads them. It uses git's sparse checkout to fetch only the K1 folder,
+not Booster's other robots or motion data:</p>
 
-<pre><code>git clone --depth 1 --filter=blob:none --sparse https://github.com/google-deepmind/mujoco_menagerie.git
-git sparse-checkout set unitree_g1      # just this one robot</code></pre>
+<pre><code>git clone --depth 1 --filter=blob:none --sparse https://github.com/BoosterRobotics/booster_assets.git
+git sparse-checkout set robots/K1      # just this one robot (~21 MB)</code></pre>
 
 <p>Then it copies our scene file <code class="file">assets/scene_teleop.xml</code>
-<strong>next to g1.xml</strong>. Why must it sit there? A classic MuJoCo trap:</p>
+<strong>next to K1_22dof.xml</strong>. Why must it sit there? A classic MuJoCo
+trap:</p>
 
 <div class="box pitfall"><span class="tag">Pitfall!</span>
-Relative asset paths in MJCF (g1.xml says <code>meshdir="assets"</code>) resolve
-against the directory of the <strong>main XML file</strong>, not the file that
-was included. Put the scene one directory up and
-<code>&lt;include file="unitree_g1/g1.xml"/&gt;</code> fails with exactly:
-<code>Error opening file 'assets/mujoco_menagerie/unitree_g1/pelvis.STL'</code>.
-We reproduced this. Hence: <em>the scene must live beside g1.xml</em>, and
-setup-assets copies it there for you.</div>
+Relative asset paths in MJCF (K1_22dof.xml says <code>meshdir="meshes/"</code>)
+resolve against the directory of the <strong>main XML file</strong> — the one
+you pass to <code>MjModel.from_xml_path</code> — not the file that was
+included. Include the robot from any other directory and every mesh path
+breaks. Hence: <em>the scene must live beside K1_22dof.xml</em>, and
+setup-assets copies it there for you. (Try it: copy the scene one directory up
+and load it — mesh after mesh fails to resolve.)</div>
 
 <h3>2.3 The scene file: assets/scene_teleop.xml</h3>
-<p>Scene = robot + floor + light + <strong>two mocap target cubes</strong>
-(the protagonists of §4):</p>
+<p>Scene = robot + <strong>two mocap target cubes</strong> (the protagonists of
+§4). Unusually, Booster's K1_22dof.xml already ships a complete mini-scene of
+its own — a ground plane, a skybox, two lights — so our wrapper adds
+<em>only</em> what teleop needs:</p>
 
-<pre><code>&lt;mujoco model="g1_teleop"&gt;
-  &lt;include file="g1.xml"/&gt;                 &lt;!-- the whole robot, one line --&gt;
+<pre><code>&lt;mujoco model="k1_teleop"&gt;
+  &lt;include file="K1_22dof.xml"/&gt;           &lt;!-- the whole robot (+ its own floor/lights) --&gt;
   &lt;worldbody&gt;
-    &lt;light pos="0 0 3.5" dir="0 0 -1" directional="true"/&gt;
-    &lt;geom name="floor" type="plane" size="0 0 0.05" material="teleop_floor"/&gt;
-
     &lt;!-- Left-hand target (red). mocap="true": no joints, no physics;
          its pose is whatever you write into it. --&gt;
-    &lt;body name="left_target" mocap="true" pos="0.25 0.25 0.9"&gt;
-      &lt;geom type="box" size="0.035 0.035 0.035" contype="0" conaffinity="0"
-            rgba="0.90 0.25 0.20 0.45"/&gt;
-      &lt;geom type="box" size="0.045 0.009 0.009" pos="0.055 0 0" .../&gt;  &lt;!-- orientation "nose" --&gt;
+    &lt;body name="left_target" mocap="true" pos="0.2 0.2 0.6"&gt;
+      &lt;geom type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0"
+            rgba="0.90 0.25 0.20 0.5"/&gt;
     &lt;/body&gt;
     &lt;!-- right_target (green) is identical --&gt;
   &lt;/worldbody&gt;
 &lt;/mujoco&gt;</code></pre>
 
 <p><code>contype="0" conaffinity="0"</code> removes the cubes from all collision
-— they are a <em>visualization of intent</em>, not physical objects. The little
-bar sticking out along +x lets you see the target's <em>orientation</em>.</p>
+— they are a <em>visualization of intent</em>, not physical objects. The cubes
+are deliberately plain: the K1 tracks hand <em>position</em> only (§5), so a
+target orientation marker would just mislead.</p>
 
 <h3>2.4 Loading and indexing: src/teleop/robot.py</h3>
 <p>MuJoCo's world is two objects: <code>MjModel</code> (immutable: structure,
@@ -281,28 +290,53 @@ read/write.</p>
 <p>Every robot-specific string is gathered into one <code>RobotSpec</code> —
 this is the entire secret of "swap robots by editing one place":</p>
 
-<pre><code>G1 = RobotSpec(
-    name="g1",
-    scene_file="unitree_g1/scene_teleop.xml",
-    home_keyframe="stand",                      # ships inside g1.xml
+<pre><code>K1 = RobotSpec(
+    name="k1",
+    scene_file="booster_k1/scene_teleop.xml",
+    base_joint="world_joint",
+    home_base_height=0.552,     # trunk height that puts the feet on the floor (measured)
+    home_joint_angles=(         # the model ships NO keyframe — we author home here
+        ("aaleft_shoulder_pitch_joint", -0.25),
+        ("left_shoulder_roll_joint", -1.40),
+        ("left_elbow_yaw_joint", -0.60),
+        # ... right side mirrors with opposite signs
+    ),
+    track_orientation=False,    # 4-DoF arms: position-only tracking (§5)
     arms=(
         ArmSpec(
             name="left",
-            joint_names=("left_shoulder_pitch_joint", "left_shoulder_roll_joint",
-                         "left_shoulder_yaw_joint", "left_elbow_joint",
-                         "left_wrist_roll_joint", "left_wrist_pitch_joint",
-                         "left_wrist_yaw_joint"),   # shoulder → wrist, 7 joints
-            ee_body="left_wrist_yaw_link",          # the body the hand is welded to
-            ee_offset=(0.08, 0.0, 0.0),             # palm = wrist origin + 8 cm (menagerie convention)
+            joint_names=("aaleft_shoulder_pitch_joint",  # vendor name, 'aa' and all
+                         "left_shoulder_roll_joint",
+                         "left_elbow_pitch_joint",       # forearm pronation
+                         "left_elbow_yaw_joint"),        # the actual elbow bend
+            ee_body="left_elbow_yaw_link",   # last arm body (forearm + hand cap)
+            ee_offset=(0.0, 0.18, 0.0),      # palm center: the forearm runs along +y
             mocap_body="left_target",
         ),
-        # right is symmetric ...
+        # right is mirrored (ee_offset y = -0.18, elbow bend sign flipped) ...
     ),
 )</code></pre>
 
-<div class="box pitfall"><span class="tag">Pitfall!</span>
-<strong>A joint has TWO index spaces.</strong> The G1 has <code>nq=36</code>
-(length of qpos) but <code>nv=35</code> (velocity/jacobian space). Why the
+<div class="box pitfall"><span class="tag">Pitfall! (names)</span>
+Two naming lessons hide in that spec. First: several K1 names carry a vendor
+<code>aa</code> prefix (<code>aaleft_shoulder_pitch_joint</code>,
+<code>aahead_yaw_joint</code>) — copy vendor names <strong>verbatim</strong>,
+oddities included; "fixing" them breaks every lookup. Second: names can lie
+about function. We measured it: on the K1, <code>elbow_pitch</code> spins the
+forearm about its own axis (pronation — the hand point doesn't move at all),
+while <code>elbow_yaw</code> is the actual elbow bend. Trust measurements, not
+names.</div>
+
+<div class="box note"><span class="tag">No keyframe?</span>
+Many vendor models ship a named home pose (a <code>&lt;keyframe&gt;</code>);
+the K1 doesn't, and its qpos=0 is a <em>flying T-pose</em> — arms straight out,
+feet 0.45 m above the floor. So <code>Robot.reset()</code> builds home by hand:
+drop the base to 0.552 m (feet exactly on the floor — measured), then apply the
+authored arm angles. Not every robot file is "batteries included".</div>
+
+<div class="box pitfall"><span class="tag">Pitfall! (indices)</span>
+<strong>A joint has TWO index spaces.</strong> The K1 has <code>nq=29</code>
+(length of qpos) but <code>nv=28</code> (velocity/jacobian space). Why the
 difference? The floating base takes 7 numbers in qpos (3 position + 4
 quaternion) but only 6 in velocity space (3 linear + 3 angular). So robot.py
 stores both <code>qpos_ids</code> (for reading/writing joint angles) and
@@ -313,8 +347,9 @@ Mixing them up is <em>the</em> classic off-by-one bug in MuJoCo code.</div>
 
 <div class="box try"><span class="tag">Try it</span>
 <code>uv run setup-assets</code> prints nq/nv and both palm positions when it
-finishes. Then print all 30 joint names and find the 14 that belong to the arms:
-<code>uv run python -c "import mujoco; m = mujoco.MjModel.from_xml_path('assets/unitree_g1/g1.xml'); print([m.joint(i).name for i in range(m.njnt)])"</code></div>
+finishes. Then print all 23 joint names (1 free + 22 hinges) and find the 8
+that belong to the arms:
+<code>uv run python -c "import mujoco; m = mujoco.MjModel.from_xml_path('assets/booster_k1/K1_22dof.xml'); print([m.joint(i).name for i in range(m.njnt)])"</code></div>
 
 <!-- ================================================================ s3 -->
 <h2 id="s3">§3 Quaternions and forward kinematics: where is the hand now?</h2>
@@ -355,8 +390,9 @@ functions; we only wrap them so the rest of the code reads like plain math.</p>
 <h3>3.2 Forward kinematics: robot.ee_pose()</h3>
 <p><strong>Forward</strong> kinematics (FK): given joint angles, where is the
 hand? MuJoCo's <code>mj_forward(model, data)</code> computes the world pose of
-every body in one call. Our "palm pose" = the wrist body's pose, offset 8 cm
-along its own x-axis to the palm center:</p>
+every body in one call. Our "palm pose" = the last arm body's pose, offset
+18 cm along the forearm (that body's ±y axis — measured from the hand mesh)
+to the palm center:</p>
 
 <pre><code>def ee_pose(self, arm):
     body = self.data.body(arm.ee_body_id)
@@ -411,7 +447,9 @@ class MouseSource(TargetSource):
 (add <span class="kbd">Shift</span> for the horizontal plane),
 <span class="kbd">Ctrl</span>+<span class="kbd">left-drag</span> to rotate.
 The arm chases it in real time. Congratulations — you are already
-"teleoperating"; the input device just happens to be a mouse.</div>
+"teleoperating"; the input device just happens to be a mouse. (Rotating a cube
+also works in the viewer, but the K1's position-only IK ignores it — §5
+explains why.)</div>
 
 <!-- ================================================================ s5 -->
 <h2 id="s5">§5 Differential inverse kinematics: the heart of the project (src/teleop/ik.py)</h2>
@@ -427,26 +465,39 @@ target; take one small step; look again; repeat. Target moving? Doesn't matter
 This is <strong>differential IK</strong>, and it is the industry-standard
 approach for VR teleoperation.</div>
 
-<h3>5.1 Error → desired velocity (twist)</h3>
-<pre><code>twist = np.empty(6)
-twist[:3] = settings.pos_gain * (target.pos - current.pos)   # position error × gain
-twist[3:] = settings.rot_gain * quat.error_world(target.quat, current.quat)</code></pre>
+<h3>5.1 Error → desired velocity</h3>
+<pre><code>twist = settings.pos_gain * (target.pos - current.pos)   # position error × gain</code></pre>
 <p>Gains have units of 1/second: "close this fraction of the error per second".
 pos_gain=12 means the hand rushes at 12 × error — the smaller the error, the
 gentler the motion. Smoothing is built in.</p>
 
+<div class="box pitfall"><span class="tag">The DoF budget (why position only)</span>
+A full pose is <strong>6</strong> numbers: 3 position + 3 orientation. Tracking
+both therefore needs at least 6 joints per arm. The K1 has <strong>4</strong> —
+and one of them (elbow_pitch, the pronation) spins the forearm about its own
+axis, so it cannot move the hand point at all: effectively 3 positional DoF +
+1 spare. Orientation is simply not in the budget; asking for it anyway makes
+the solver trade away position accuracy chasing the impossible. Hence
+<code>track_orientation=False</code> in the spec: the error is 3-D, the
+jacobian keeps only its position rows, and the hand's orientation is whatever
+the arm geometry implies. (ik.py retains the full 6-D path — plug in a robot
+with ≥ 6-DoF arms, flip the flag, and orientation tracking lights up. The
+orientation error math lives in <code>quat.error_world</code>, §3.)</div>
+
 <h3>5.2 The jacobian: the bridge between joint and hand velocity</h3>
 <p>The <strong>jacobian J</strong> answers "if each joint turned at 1 rad/s,
-how would the hand move?": hand 6-D velocity = J · joint velocities. MuJoCo
+how would the hand move?": hand velocity = J · joint velocities. MuJoCo
 hands it to us:</p>
 <pre><code>jacp = np.zeros((3, model.nv)); jacr = np.zeros((3, model.nv))
 mujoco.mj_jac(model, data, jacp, jacr, current.pos, arm.ee_body_id)  # taken at the palm point
-jac = np.vstack([jacp, jacr])[:, arm.dof_ids]   # keep this arm's 7 columns → 6×7</code></pre>
+jac = jacp[:, arm.dof_ids]   # position rows only; this arm's 4 columns → 3×4</code></pre>
 <p>Note the column slice uses <code>dof_ids</code> (the §2 pitfall): jacobians
-live in nv space.</p>
+live in nv space. And you can <em>see</em> the pronation fact in this matrix:
+the elbow_pitch column is ≈ 0 — that joint moves nothing the position task
+cares about, which is exactly why 5.4 hands it to the posture objective.</p>
 
 <h3>5.3 Damped least squares (DLS): inverting without drama</h3>
-<p>We want J·dq = twist. J isn't square (6×7), and naive "division" explodes
+<p>We want J·dq = twist. J isn't square (3×4), and naive "division" explodes
 near a <strong>singularity</strong> (e.g. a fully stretched arm): some
 directions of hand motion become impossible, and forcing them demands infinite
 joint speed. The fix is a little damping λ in the inversion:</p>
@@ -458,33 +509,38 @@ dq = jac.T @ np.linalg.solve(jjt, twist)</code></pre>
 least-squares solution (dangerous); large λ is sluggish everywhere. We use 0.05.</p>
 
 <h3>5.4 The nullspace: where the spare freedom goes</h3>
-<p>Seven joints chasing a 6-D pose leaves one degree of freedom spare: the
-elbow can swing without the hand feeling it. Left unmanaged, the elbow slowly
-drifts somewhere awkward. We spend the spare freedom on "gently pull toward a
-comfortable home posture" — but it must be <strong>projected into the
-nullspace</strong> (the directions where J·dq = 0), guaranteed invisible to
-the hand:</p>
+<p>Four joints chasing a 3-D point leaves one degree of freedom spare — on the
+K1 it is essentially the forearm pronation (5.2 showed its jacobian column is
+≈ 0). Left unmanaged, spare joints slowly drift somewhere awkward. We spend
+the spare freedom on "gently pull toward a comfortable home posture" — but it
+must be <strong>projected into the nullspace</strong> (the directions where
+J·dq = 0), guaranteed invisible to the hand:</p>
 <pre><code>dq_posture = settings.posture_gain * (arm.q_home - data.qpos[arm.qpos_ids])
 dq += dq_posture - np.linalg.pinv(jac) @ (jac @ dq_posture)   # (I − J⁺J)·dq_posture</code></pre>
 
 <div class="box pitfall"><span class="tag">Pitfall! (measured war story #1)</span>
 The projection must use the <strong>exact pseudo-inverse</strong>
-<code>np.linalg.pinv(jac)</code>. Our first version lazily reused the damped
-inverse from 5.3 — the posture term "leaked" into task space and fought the
-tracking, so the hand stopped <strong>11 mm</strong> short of the target,
-forever (measured). With the exact projector: 0.00 mm. To reproduce: change
-that line back to <code>jac.T @ np.linalg.solve(jjt, jac @ dq_posture)</code>
-and watch <code>uv run pytest tests/test_ik.py -k reaches</code> fail.</div>
+<code>np.linalg.pinv(jac)</code>. It is tempting to reuse the damped inverse
+from 5.3 — but the damping makes the projector <em>leak</em> posture motion
+into task space, which fights the tracking and parks the hand short of the
+target forever. Measured on the K1's static-reach test: <strong>0.33 mm</strong>
+steady-state error with the damped projector vs <strong>0.00 mm</strong> with
+the exact one — and the leak grows with the damping and the task dimension
+(on a 7-DoF arm tracking a full 6-D pose we measured it at over a
+centimeter). A steady-state error that no amount of waiting fixes is the
+signature of this bug. Reproduce it: swap the line above for
+<code>jac.T @ np.linalg.solve(jjt, jac @ dq_posture)</code> and rerun the §5
+"Try it" experiment.</div>
 
 <div class="box pitfall"><span class="tag">Pitfall! (measured war story #2)</span>
-In the G1's stand keyframe the arms hang nearly straight down — a pose that is
-<strong>close to singular</strong> (smallest singular value 0.011; damping
-squashes velocity in that direction to ~5%). Worse, keeping the
-"hanging-arm palm orientation" while lifting the hand to chest height jams the
-<code>wrist_pitch</code> joint into its +1.61 rad limit: orientation error
-stuck at 38°, dragging position off by 40 mm too. That is why §7's trajectory
-first <em>lifts the hands and pitches the palms forward</em> before drawing
-the 8: designing good targets matters as much as a good solver.</div>
+At home the K1's arms hang near the <strong>bottom of their workspace</strong>,
+close to singular — some motion directions are nearly impossible there and
+tracking turns sluggish. We measured the figure-8's worst-case error for a
+sweep of working-center heights: centered only 10 cm above home it is
+<strong>30.5 mm</strong>; lifted 14 cm, 24.6 mm; lifted 18 cm (where §7 puts
+it), <strong>9.9 mm</strong>. Same solver, three-times-better tracking — that
+is why the trajectory <em>lifts the hands to the chest first</em>: designing
+good targets matters as much as a good solver.</div>
 
 <h3>5.5 Finishing touches: speed cap, limits, integration</h3>
 <pre><code>peak = float(np.max(np.abs(dq)))
@@ -495,7 +551,7 @@ q = robot.data.qpos[arm.qpos_ids] + dq * dt            # integrate one small ste
 robot.data.qpos[arm.qpos_ids] = np.clip(q, arm.joint_min, arm.joint_max)</code></pre>
 <p>The speed cap protects real motors (§9 reuses it directly); limits are
 hard-clipped with <code>np.clip</code>. The two arms share no joints, so each
-solves its own little 6×7 problem — simpler code, simpler mental model.</p>
+solves its own little 3×4 problem — simpler code, simpler mental model.</p>
 
 <div class="box try"><span class="tag">Try it</span>
 ① Set <code>IKSettings.damping</code> to 0.5 and run
@@ -533,10 +589,25 @@ and exit non-zero if the final error exceeds 30 mm. That mode is the
 end-to-end smoke test for CI/servers, and your fastest alarm when you break
 the IK.</p>
 
+<div class="box note"><span class="tag">Platform note</span>
+On <strong>macOS</strong>, MuJoCo's interactive viewer must run under Apple's
+<code>mjpython</code> launcher: <code>uv run mjpython -m teleop.run_sim</code>.
+run_sim detects the situation and tells you; <code>--headless</code> (and all
+tests) work under plain Python everywhere.</div>
+
 <div class="box try"><span class="tag">Try it</span>
 <code>uv run test-in-sim --headless --duration 15</code>: watch the error fall
-from tens of millimeters during the lift to 5–14 mm while drawing the 8. Then
-deliberately set <code>pos_gain</code> to 1 and watch it FAIL.</div>
+to 5–10 mm while drawing the 8. Then deliberately set <code>pos_gain</code> to
+1 and watch it FAIL.</div>
+
+<p>No display at all (a remote server, CI)? You can still <em>watch</em> the
+robot: <code>uv run render-videos</code>
+(<code class="file">src/teleop/tools/render_videos.py</code>) runs the same
+loop against MuJoCo's offscreen renderer and writes three MP4s into
+<code>video/</code> — the figure-8 demo, a scripted fake-headset clip that
+makes the clutch visible (a controller sphere flies away while the robot holds
+still), and a workspace-edge stress clip for §5's damping discussion. Handy
+for slides, too.</p>
 
 <!-- ================================================================ s7 -->
 <h2 id="s7">§7 The first target source: a scripted figure-8 (src/teleop/sources/trajectory.py)</h2>
@@ -552,26 +623,26 @@ deliberately set <code>pos_gain</code> to 1 and watch it FAIL.</div>
 wherever the hands are</strong> (that no-jumps principle again):</p>
 <ol>
 <li><strong>Lift-in (first 3 s)</strong>: smoothstep (3x²−2x³, zero velocity at
-    both ends) carries both hands from the hanging pose to a spot in front of
-    the chest, <code>LIFT_OFFSET=(0.22, 0, 0.18)</code>, while pitching the
-    palms forward about the world y-axis by <code>LIFT_PITCH=−0.6 rad</code> —
-    the antidote to §5's war story #2. The number was found by a measured
-    sweep: 0.0 jams the wrist limit (38° residual); −0.6 tracks with 0.0°
-    orientation error.</li>
+    both ends) carries both hands from the hanging pose to a working spot in
+    front of the chest, <code>LIFT_OFFSET=(0.10, 0, 0.18)</code>. The numbers
+    come from §5's war story #2 sweep: this center tracks the 8 at 9.9 mm
+    worst-case, versus 30.5 mm barely above the hanging pose. (The K1 tracks
+    position only, so no orientation choreography is needed — targets keep
+    their reset orientation forever.)</li>
 <li><strong>The figure-8</strong>: a lemniscate in the y–z plane, right hand
     mirrored:</li>
 </ol>
 <pre><code>u  = 2π · (t − ramp_time) / period
-Δy = A · sin(u)                 # A = 0.12 m
+Δy = A · sin(u)                 # A = 0.10 m
 Δz = A/2 · sin(2u)              # double frequency → the "∞" shape
 left  = rest + lift + (0, +Δy, Δz)
 right = rest + lift + (0, −Δy, Δz)        # mirrored, like tai chi</code></pre>
 
 <div class="box try"><span class="tag">Try it</span>
-Set <code>amplitude=0.2</code> and rerun — do the edges of the bigger 8 hit the
-workspace boundary? (Watch when the printed error grows.) Halve
-<code>period</code>: speed doubles, and lag = speed ÷ pos_gain. Predict the
-number, then measure it.</div>
+Set <code>amplitude=0.12</code> and rerun — the edges of the bigger 8 brush the
+workspace boundary of the K1's 0.39 m arms (we measured worst-case error
+tripling to ~32 mm). Halve <code>period</code>: speed doubles, and
+lag = speed ÷ pos_gain. Predict the number, then measure it.</div>
 
 <!-- ================================================================ s8 -->
 <h2 id="s8">§8 VR: WebXR, coordinate frames, and the clutch</h2>
@@ -580,8 +651,8 @@ number, then measure it.</div>
 <strong>WebXR</strong> — a web page opened in the Pico's built-in browser reads
 controller poses and streams them to the PC over a WebSocket. <em>Zero install
 on the headset</em> (you open one URL), and the PC side adds a single
-<code>websockets</code> dependency. Unitree's official G1 teleoperation uses
-this same pattern. (The research-grade alternative — PICO's XRoboToolkit,
+<code>websockets</code> dependency. Several production humanoid-teleop stacks
+drive their robots from the PICO's built-in browser with this same pattern. (The research-grade alternative — PICO's XRoboToolkit,
 ~90 Hz native streaming + body tracking — requires building a Unity APK and
 adb-sideloading it onto every headset: too much setup for a classroom. See
 §10.)</p>
@@ -653,7 +724,10 @@ target never jumps. Exactly like lifting a mouse to re-center it on the pad.</p>
         #              └── world-frame rotation since the grab ──┘</code></pre>
 <p><code>scale</code> is the ergonomics knob: 0.5 = you move 10 cm, the robot
 moves 5 cm (precision work); 2.0 = big workspace. The <code>--scale</code> CLI
-flag feeds straight into this (pico source only).</p>
+flag feeds straight into this (pico source only). Note the clutch transports
+the full pose — position <em>and</em> rotation — even though the K1's
+position-only IK uses just the position half; plug in a robot with ≥ 6-DoF
+arms and the rotation half starts mattering, with no clutch changes.</p>
 
 <h3>8.4 The PC-side server: src/teleop/sources/pico.py</h3>
 <p>One port does two jobs: a plain HTTPS GET returns the page above, and
@@ -671,7 +745,19 @@ background thread; when the 60 Hz main loop comes asking, it reads only the
     return TargetFrame(left=..., right=...)</code></pre>
 <p>On first run it generates a self-signed certificate into
 <code>.certs/</code> with <code>cryptography</code> (SAN includes your LAN IP)
-and prints the URL the headset should open.</p>
+and prints the URL the headset should open. If the laptop later moves to a
+different network, the cached certificate no longer covers the new IP — the
+server notices and regenerates it automatically.</p>
+
+<p>Four robustness details worth reading in the code (each one started life as
+a reviewer-found bug): <code>start()</code> returns only once the server is
+<em>actually listening</em>, and raises a clear error if the port is taken
+(no false "ready" banner); only <strong>one headset</strong> may drive at a
+time — a second simultaneous client is politely closed (imagine two students'
+controllers fighting over one clutch: the target would teleport between their
+hands); a malformed message is logged and skipped instead of killing the
+connection; and <code>stop()</code> is safe to call at any moment, even if the
+server never managed to start.</p>
 
 <div class="box try"><span class="tag">Try it</span>
 Put the PC and the Pico on the same Wi-Fi, run
@@ -698,11 +784,23 @@ real.send_joint_targets(brain.joint_targets())   # ...and the real robot copies 
 <p>Safety is layered. Learn the order (AGENTS.md forbids removing any layer):</p>
 <table>
 <tr><th>Layer</th><th>Mechanism</th><th>Where</th></tr>
+<tr><td>0 Gates</td><td>a non-dryrun robot requires the pico source (it alone has a
+    deadman+watchdog); command rates in the IK's unstable zone are rejected</td>
+    <td>run_real.py argparse</td></tr>
 <tr><td>1 Deadman</td><td>targets move only while the grip is held</td><td>the clutch (§8.3)</td></tr>
 <tr><td>2 Watchdog</td><td>VR stream silent 0.5 s → targets freeze</td><td>pico.py get_targets</td></tr>
 <tr><td>3 Motion limits</td><td>hard joint-limit clip + per-joint speed cap</td><td>ik.py (§5.5)</td></tr>
 <tr><td>4 On-robot checks</td><td>the hardware driver must re-verify limits itself</td><td>real_robot.py contract</td></tr>
 </table>
+
+<div class="box pitfall"><span class="tag">Pitfall! (why layer 0 exists)</span>
+The IK integrates with explicit Euler: per tick the error is multiplied by
+(1 − gain·dt). That is stable only while gain·dt &lt; 2. With pos_gain = 12/s,
+commanding at 5 Hz (dt = 0.2 s) gives gain·dt = 2.4 — we measured the streamed
+commands flipping ±27° <em>every tick</em> at the full velocity cap: a violent
+limit cycle, not tracking. Try <code>uv run test-in-real --rate 5</code>: it
+refuses, and now you know exactly why. (Also: <code>--source mouse</code> only
+exists in test-in-sim — it is the viewer that moves the targets.)</div>
 
 <h3>The hardware interface: src/teleop/real_robot.py</h3>
 <p>All of hardware is compressed into three methods, addressed by MuJoCo joint
@@ -712,21 +810,80 @@ name:</p>
     def send_joint_targets(self, targets: dict[str, float]): ...  # joint angles [rad] at 50 Hz
     def disconnect(self): ...                      # stop motion; must be safe to call twice</code></pre>
 <p>The default implementation, <code>DryRunRobot</code>, prints instead of
-moving, so <code>uv run test-in-real</code> is always safe to run.
-<code>FaunaRobot</code> is the slot reserved for the real Sprout: its methods
-raise <code>NotImplementedError</code>, and a <code>JOINT_TO_MOTOR</code> table
-waits for you to fill in with the Fauna SDK (Sprout: 6-DoF per arm, 1-DoF
-grippers; model + SDK behind the login at docs.faunarobotics.com). Mapping
-the G1's 7-joint arms onto Sprout's 6-joint arms is just another
-<code>RobotSpec</code> in robot.py — the IK, the sources, and the main loops
+moving, so <code>uv run test-in-real</code> is always safe to run. The real
+driver lives in its own module and is selected with <code>--robot k1</code>.</p>
+
+<h3>The real driver: src/teleop/booster_k1.py</h3>
+
+<p>Booster's SDK is the optional hardware extra
+(<code>uv sync --extra real</code>; Linux-only binary wheels, which is why it
+is not a core dependency). The driver is built around one key robot feature,
+<code>UpperBodyCustomControl</code>: <strong>the robot keeps balancing itself,
+we only borrow the arms</strong>. The onboard controller never stops owning
+the legs, so balance never becomes our problem — and "letting go" just hands
+the arms back to a robot that is still standing. (The alternative,
+<code>RobotMode.kCustom</code>, is full low-level control of all 22 motors:
+you would inherit the balance problem along with them.)</p>
+
+<p><code>connect()</code> runs in three phases:</p>
+
+<ol>
+<li><strong>Reach the robot</strong>:
+    <code>ChannelFactory.Instance().Init(0, iface)</code> — the SDK talks
+    Fast DDS over the LAN (<code>--iface</code> picks the network interface) —
+    then <code>B1LocoClient</code> for mode-change RPCs.</li>
+<li><strong>Stand up (only with <code>--stand</code>)</strong>:
+    <code>ChangeMode(RobotMode.kPrepare)</code> brings the robot into its
+    two-foot standing posture, then <code>ChangeMode(RobotMode.kWalking)</code>
+    activates the balance controller. If the robot is already standing (e.g.
+    brought up with Booster's remote), omit the flag.</li>
+<li><strong>Take over the arms</strong>: read one state message from
+    <code>rt/low_state</code> to learn the <em>measured</em> arm pose, call
+    <code>UpperBodyCustomControl(True)</code>, and start publishing
+    <code>LowCmd</code> messages at 50 Hz.</li>
+</ol>
+
+<p>Each <code>LowCmd</code> carries all 22 motors, but only the 8 arm entries
+carry gains (kp=60, kd=1.5, Booster's own example values). Every other motor
+is sent kp = kd = 0 — a zero-gain command is "no command", which is exactly
+what leaves those motors to the onboard balance controller. Two more details
+worth copying into any driver you ever write:</p>
+
+<ul>
+<li><strong>Soft start</strong>: for the first 2 s, commands blend from the
+    measured arm pose to the IK's pose (<code>arm_setpoints</code>, a pure
+    function — see its tests), so takeover can never make the arms jump.</li>
+<li><strong>Re-clamp</strong> (safety layer 4): targets are clipped to the
+    joint limits again inside the driver, even though the IK already did it.
+    A driver never trusts its caller.</li>
+</ul>
+
+<p><code>JOINT_TO_MOTOR</code> maps our MuJoCo joint names to the SDK's
+<code>JointIndexK1</code> motor indices (head = 0–1, arms = 2–9, legs = 10–21).
+Our joint names come verbatim from the model file, <code>aa</code> prefixes
+and all, so the dict keys line up with <code>robot.joint_targets()</code>
+automatically. A different robot later is just another <code>RobotSpec</code>
+in robot.py plus one driver module — the IK, the sources, and the main loops
 don't change by a single line.</p>
+
+<div class="box pitfall"><span class="tag">Before the first real run</span>
+Keep a hand on the e-stop. Verify your robot's firmware accepts
+<code>UpperBodyCustomControl</code> (SDK ≥ 1.6; Booster's gated docs list the
+firmware minimum). On <code>disconnect()</code> the driver calls
+<code>UpperBodyCustomControl(False)</code> — arms back to the robot, which
+<em>keeps standing</em>; it deliberately does not drop into damping mode,
+because a damped robot falls.</div>
 
 <div class="box try"><span class="tag">Try it</span>
 ① Rehearse the whole real-robot pipeline without a headset:
 <code>uv run test-in-real --source trajectory --duration 5</code> — watch the
 50 Hz joint command stream print. ② With the headset:
 <code>uv run test-in-real</code> (defaults: pico source + dry-run robot).
-③ Thought experiment: why does the watchdog freeze the <em>targets</em> rather
+③ With a robot on the LAN:
+<code>uv sync --extra real</code>, then
+<code>uv run test-in-real --robot k1 --stand</code> — the K1 stands up,
+balances, and your controllers drive its hands.
+④ Thought experiment: why does the watchdog freeze the <em>targets</em> rather
 than emergency-stopping the motors? (Hint: what does an arm do when it
 suddenly loses power?)</div>
 
@@ -742,36 +899,49 @@ suddenly loses power?)</div>
     in §5 and reproduce each once, with an error-curve screenshot. You only
     truly understand a fix once you can resurrect the bug.</li>
 <li><strong>Trigger → gripper</strong>: the WebXR messages already carry
-    <code>trigger</code> (0–1). Wire it to a printout/visualization (g1.xml has
-    no fingers; on the real robot this becomes Sprout's gripper opening).</li>
-<li><strong>Let the waist join in</strong>: add the G1's waist joints to the
-    IK's degrees of freedom. (Hint: the arms would then share columns — which
-    assumption of "each arm solves independently" breaks, and what would you
-    do about it?)</li>
-<li><strong>Real physics</strong>: g1.xml ships position actuators (kp=500).
-    Change run_sim to <code>data.ctrl[...] = IK's qpos</code> +
-    <code>mj_step</code>, and compare with puppet mode: does it oscillate? Can
-    it fall? Why?</li>
+    <code>trigger</code> (0–1). Wire it to a printout/visualization (the base
+    K1 has no hands; grippers and dexterous hands are optional add-ons that
+    the real robot drives via the SDK's <code>ControlGripper</code> /
+    <code>ControlDexterousHand</code> calls).</li>
+<li><strong>The head as a camera gimbal</strong>: the K1 has 2 head joints
+    (<code>aahead_yaw_joint</code>, <code>aahead_pitch_joint</code>) that the
+    teleop ignores. Make the head look at the midpoint of the two hand
+    targets every frame (hint: it's two <code>atan2</code> calls on the
+    midpoint in the head's frame — no jacobian needed for 2 joints).</li>
+<li><strong>Real physics</strong>: K1_22dof.xml ships raw torque motors, not
+    position servos. Weld the trunk to the world (one
+    <code>&lt;equality&gt;&lt;weld&gt;</code> element in the scene — otherwise
+    the robot falls, nothing balances it), then drive the arms with your own
+    PD law <code>tau = kp·(q* − q) − kd·q̇</code> into <code>data.ctrl</code>
+    and <code>mj_step</code>. Compare with puppet mode: does it lag? oscillate?
+    Which kp/kd feel like the real driver's values (kp=60, kd=1.5)?</li>
 <li><strong>The research-grade pipeline</strong>: replace the WebXR source with
     PICO's XRoboToolkit (PC service + Unity client +
     <code>pip install xrobotoolkit-sdk</code>) — one new
     <code>TargetSource</code> is all it takes; that's what the interface is
     for.</li>
-<li><strong>Drive the real robot</strong>: once you have Fauna SDK access,
-    implement <code>FaunaRobot</code>'s three methods and a Sprout
-    <code>RobotSpec</code>. Unloaded first, low gains, hand on the e-stop.</li>
+<li><strong>Drive the real robot</strong>: bring up
+    <code>booster_k1.py</code> on hardware (§9 walks through the driver).
+    First run: verify <code>JOINT_TO_MOTOR</code> against the SDK's
+    <code>JointIndexK1</code> enum, halve <code>ARM_KP</code>, keep a hand on
+    the e-stop, and only then try
+    <code>uv run test-in-real --robot k1 --stand</code>. Then extend the
+    driver: ramp the gains back up, and add the head motors (0–1) once you
+    have done exercise 4.</li>
 </ol>
 
 <h3>Further reading</h3>
 <ul>
 <li>MuJoCo docs (<a href="https://mujoco.readthedocs.io">mujoco.readthedocs.io</a>):
     the XML format, <code>mj_jac</code>, mocap bodies.</li>
-<li>mujoco_menagerie: the source of our G1 model (BSD-3, © Unitree Robotics).</li>
+<li><a href="https://github.com/BoosterRobotics/booster_assets">booster_assets</a>:
+    the official K1 model we download (BSD-3-Clause, © BoosterRobotics) — also
+    holds 50 Hz example motion data for the K1.</li>
+<li>Booster's developer portal (docs.booster.tech) and the SDK
+    (<a href="https://github.com/BoosterRobotics/booster_robotics_sdk">booster_robotics_sdk</a>,
+    Apache-2.0; <code>pip install booster_robotics_sdk_python</code>).</li>
 <li>WebXR: MDN's WebXR Device API, and the Gamepads Module (the xr-standard
     button table).</li>
-<li>The Fauna Sprout systems paper: arXiv:2601.18963 (their official teleop is
-    also VR + differential IK, using the PINK library — the same family of
-    methods as this course).</li>
 <li>Stronger IK: mink / pink (QP-based differential IK with multiple tasks and
     inequality constraints) — after §5, their docs will read easily.</li>
 </ul>
@@ -780,7 +950,7 @@ suddenly loses power?)</div>
 <p>The ik-teleop lesson · this file is the single code↔teaching mapping required
 by AGENTS.md; every code change must update it, and
 <code>uv run check-lesson</code> enforces that. Code is MIT-licensed; the
-Unitree G1 model is BSD-3-Clause (its LICENSE file ships with the download).</p>
+Booster K1 model is BSD-3-Clause (its LICENSE file ships with the download).</p>
 </footer>
 
 </main>

@@ -21,9 +21,17 @@ The three ideas, in the order they appear below:
    dq = Jᵀ (J Jᵀ + λ²I)⁻¹ · twist. The damping λ trades a little accuracy
    for a lot of stability.
 
-Plus one optional refinement: any leftover freedom (a 7-DoF arm chasing a
-6-DoF pose has one spare DoF) is spent drifting toward a comfortable home
-posture — in the *nullspace*, so it never disturbs the hand.
+Plus one optional refinement: any leftover freedom is spent drifting toward a
+comfortable home posture — in the *nullspace*, so it never disturbs the hand.
+
+**The DoF budget.** A full pose is 6 numbers (3 position + 3 orientation), so
+tracking both needs at least 6 joints per arm. The K1 has 4 (and one of them
+is forearm pronation, which cannot move the hand point at all) — orientation
+is simply not in the budget. Its ``RobotSpec`` therefore sets
+``track_orientation=False``: we keep only the 3 position rows of the jacobian
+and the hand's orientation is whatever the arm geometry implies. The
+orientation math below stays, used whenever a robot with ≥ 6-DoF arms is
+plugged in.
 """
 
 from __future__ import annotations
@@ -42,7 +50,8 @@ class IKSettings:
     """Tuning knobs. Defaults are deliberately gentle; see lesson §5 to retune."""
 
     pos_gain: float = 12.0  # [1/s] fraction of position error to close per second
-    rot_gain: float = 6.0  # [1/s] same, for orientation
+    rot_gain: float = 6.0  # [1/s] same, for orientation (unused when the robot
+    #                        doesn't track orientation, e.g. the 4-DoF-arm K1)
     damping: float = 0.05  # DLS λ; larger = more stable, slower near targets
     max_joint_vel: float = 4.0  # [rad/s] per-joint speed cap (safety + realism)
     posture_gain: float = 0.5  # [1/s] nullspace pull toward the home posture
@@ -72,16 +81,21 @@ def solve_arm_velocity(robot: Robot, arm: Arm, settings: IKSettings) -> tuple[np
     target = robot.target_pose(arm)
     current = robot.ee_pose(arm)
 
-    # 1. Desired end-effector twist (linear + angular velocity, world frame).
-    twist = np.empty(6)
-    twist[:3] = settings.pos_gain * (target.pos - current.pos)
-    twist[3:] = settings.rot_gain * quat.error_world(target.quat, current.quat)
-
-    # 2. Jacobian of the end-effector point, restricted to this arm's joints.
+    # 1. Desired end-effector velocity (world frame) and 2. the jacobian,
+    #    restricted to this arm's joints. With track_orientation=False (the
+    #    K1: 4-DoF arms) only the 3 position rows exist — asking a 4-DoF arm
+    #    to also hold an orientation would just corrupt the position tracking.
     jacp = np.zeros((3, model.nv))  # d(position)/d(joint velocities)
     jacr = np.zeros((3, model.nv))  # d(orientation)/d(joint velocities)
     mujoco.mj_jac(model, data, jacp, jacr, current.pos, arm.ee_body_id)
-    jac = np.vstack([jacp, jacr])[:, arm.dof_ids]  # shape (6, n_arm_joints)
+    if robot.spec.track_orientation:
+        twist = np.empty(6)
+        twist[:3] = settings.pos_gain * (target.pos - current.pos)
+        twist[3:] = settings.rot_gain * quat.error_world(target.quat, current.quat)
+        jac = np.vstack([jacp, jacr])[:, arm.dof_ids]  # shape (6, n_arm_joints)
+    else:
+        twist = settings.pos_gain * (target.pos - current.pos)
+        jac = jacp[:, arm.dof_ids]  # shape (3, n_arm_joints)
 
     # 3. Damped least squares:  dq = Jᵀ (J Jᵀ + λ² I)⁻¹ · twist
     jjt = jac @ jac.T
@@ -90,9 +104,10 @@ def solve_arm_velocity(robot: Robot, arm: Arm, settings: IKSettings) -> tuple[np
 
     # 4. Nullspace posture task: move toward home only in ways the hand can't feel.
     #    Project the posture velocity through (I − J⁺J). The projector must use
-    #    the EXACT pseudo-inverse: reusing the damped inverse here leaks posture
-    #    motion into task space and the hand stops ~1 cm short of the target
-    #    forever (a measured 11 mm steady-state error — see lesson §5).
+    #    the EXACT pseudo-inverse: reusing the damped inverse leaks posture
+    #    motion into task space, so the hand stops short of the target forever
+    #    (measured on the K1: 0.33 mm steady-state error, vs 0.00 mm exact; the
+    #    leak grows with damping and task dimension — see lesson §5).
     if settings.posture_gain > 0.0:
         dq_posture = settings.posture_gain * (arm.q_home - data.qpos[arm.qpos_ids])
         dq += dq_posture - np.linalg.pinv(jac) @ (jac @ dq_posture)

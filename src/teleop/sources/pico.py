@@ -71,12 +71,22 @@ class PicoSource(TargetSource):
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._shutdown: asyncio.Event | None = None
+        self._ready = threading.Event()  # set once the server is listening (or failed)
+        self._startup_error: BaseException | None = None
+        self._active_client = None  # the one headset allowed to drive (first wins)
 
     # ------------------------------------------------------- main-loop side --
 
     def start(self) -> None:
+        """Start the server thread; returns only once it is actually listening."""
         self._thread = threading.Thread(target=self._run_server, name="pico-server", daemon=True)
         self._thread.start()
+        self._ready.wait(timeout=15.0)
+        if self._startup_error is not None or not self._ready.is_set():
+            raise RuntimeError(
+                f"Pico bridge failed to start on port {self.port} — is another "
+                f"test-in-sim/test-in-real still running? Try --port <number>."
+            ) from self._startup_error
         print(
             f"\nPico bridge ready. ON THE HEADSET (same Wi-Fi):\n"
             f"  1. open the browser at  https://{lan_ip()}:{self.port}\n"
@@ -102,15 +112,27 @@ class PicoSource(TargetSource):
         return TargetFrame(left=targets["left"], right=targets["right"])
 
     def stop(self) -> None:
-        if self._loop is not None and self._shutdown is not None:
-            self._loop.call_soon_threadsafe(self._shutdown.set)
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
+        if self._thread is None:
+            return
+        self._ready.wait(timeout=3.0)  # don't lose a stop() that races startup
+        if self._loop is not None and self._shutdown is not None and not self._loop.is_closed():
+            try:
+                self._loop.call_soon_threadsafe(self._shutdown.set)
+            except RuntimeError:
+                pass  # the loop died in the meantime; nothing left to stop
+        self._thread.join(timeout=3.0)
 
     # ---------------------------------------------------------- server side --
 
     def _run_server(self) -> None:
-        asyncio.run(self._serve())
+        try:
+            asyncio.run(self._serve())
+        except BaseException as err:
+            self._startup_error = err
+            if self._ready.is_set():  # crashed after a good start: make it visible
+                print(f"pico: server crashed: {err!r}")
+        finally:
+            self._ready.set()  # unblock start()/stop() even when startup failed
 
     async def _serve(self) -> None:
         # Import here so `uv run test-in-sim` (trajectory/mouse) never needs these.
@@ -122,6 +144,7 @@ class PicoSource(TargetSource):
         cert, key = ensure_certificate(CERT_DIR)
         tls.load_cert_chain(cert, key)
         async with serve(self._on_websocket, "0.0.0.0", self.port, ssl=tls, process_request=self._on_http):
+            self._ready.set()  # the port is bound; start() may now print the banner
             await self._shutdown.wait()
 
     def _on_http(self, connection, request):
@@ -134,15 +157,29 @@ class PicoSource(TargetSource):
         return response
 
     async def _on_websocket(self, websocket) -> None:
+        if self._active_client is not None:  # one headset drives; reject the rest
+            print("pico: rejected a second client (one headset at a time)")
+            await websocket.close(1008, "another headset is already connected")
+            return
+        self._active_client = websocket
         print("pico: headset connected")
         try:
             async for message in websocket:
-                self._ingest(json.loads(message))
+                try:
+                    self.ingest(json.loads(message))
+                except (ValueError, KeyError, TypeError, AttributeError) as err:
+                    print(f"pico: ignoring malformed message ({err!r})")
         finally:
+            self._active_client = None
             print("pico: headset disconnected")
 
-    def _ingest(self, msg: dict) -> None:
-        """Parse one JSON message (see webxr/index.html for the format)."""
+    def ingest(self, msg: dict) -> None:
+        """Accept one message (see webxr/index.html for the JSON format).
+
+        Called by the WebSocket handler above — and directly by synthetic
+        drivers (tests and the video renderer script a fake headset through
+        here).
+        """
         snap = Snapshot(
             received_at=time.monotonic(),
             left=parse_hand(msg.get("left")),
@@ -172,6 +209,25 @@ def lan_ip() -> str:
         s.close()
 
 
+def covers_current_ip(cert_path: Path) -> bool:
+    """True if the cached certificate still lists this machine's LAN IP.
+
+    The IP changes when the laptop moves to another network; the certificate
+    is throwaway, so on a mismatch we simply regenerate (the headset shows the
+    accept-the-warning screen once more, and the URL keeps matching the cert).
+    """
+    import ipaddress
+
+    from cryptography import x509
+
+    try:
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        sans = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        return ipaddress.ip_address(lan_ip()) in sans.get_values_for_type(x509.IPAddress)
+    except (ValueError, x509.ExtensionNotFound):
+        return False  # unreadable or SAN-less cert: regenerate
+
+
 def ensure_certificate(cert_dir: Path) -> tuple[Path, Path]:
     """Create (once) and return a self-signed TLS certificate + key.
 
@@ -179,7 +235,7 @@ def ensure_certificate(cert_dir: Path) -> tuple[Path, Path]:
     fine on a classroom LAN. WebXR simply refuses to run without HTTPS.
     """
     cert_path, key_path = cert_dir / "cert.pem", cert_dir / "key.pem"
-    if cert_path.exists() and key_path.exists():
+    if cert_path.exists() and key_path.exists() and covers_current_ip(cert_path):
         return cert_path, key_path
 
     import datetime
