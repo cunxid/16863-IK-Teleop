@@ -1,6 +1,6 @@
-"""VR-space → robot-space mapping, and the clutch.
+"""VR-space → robot-space mapping, recentering, and the clutch.
 
-Two small, pure-math pieces live here (no MuJoCo state, fully unit-testable):
+Three small, pure-math pieces live here (no MuJoCo state, fully unit-testable):
 
 1. **Frame conversion.** WebXR and MuJoCo disagree on axes:
 
@@ -11,16 +11,28 @@ Two small, pure-math pieces live here (no MuJoCo state, fully unit-testable):
    controller forward" must become "+x in robot world". That is a fixed
    rotation, applied to every controller pose as it enters the system.
 
-2. **The clutch** (like a mouse you can lift). Absolute mapping would need
+2. **Recentering.** The fixed rotation above silently assumes you are
+   *physically facing the robot's forward direction* — WebXR's -z is wherever
+   you looked when the VR session started. Stand turned 90° and "push forward"
+   moves the robot sideways. ``recenter_correction`` fixes that: given the
+   headset's current orientation, it returns the yaw rotation that re-zeroes
+   "forward" to wherever you are facing right now (the headset page triggers
+   it with the A/X button).
+
+3. **The clutch** (like a mouse you can lift). Absolute mapping would need
    calibration ("where is the headset relative to the robot?"). Instead we
    use *relative* mapping: while you HOLD the grip button, controller
-   deltas are applied to the target; release, reposition your arm
+   position deltas are applied to the target; release, reposition your arm
    comfortably, grab again — the target never jumps. This is the single
-   most important UX trick in VR teleoperation.
+   most important UX trick in VR teleoperation. The clutch is deliberately
+   **translation-only**: our robots track hand position (4-DoF arms, lesson
+   §5), so transporting wrist rotation would only spin the target cubes
+   confusingly.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -67,6 +79,28 @@ def xr_to_mj_pose(pos_xr: np.ndarray, quat_xr_wxyz: np.ndarray) -> Pose:
     return Pose(pos_mj, quat.normalize(q))
 
 
+def recenter_correction(head_quat_wxyz: np.ndarray) -> np.ndarray | None:
+    """Yaw rotation (wxyz, XR frame) that makes "where you face now" = XR -z.
+
+    Apply it to every raw controller pose BEFORE ``xr_to_mj_pose`` (rotate
+    positions, premultiply orientations) and "push forward" means "the way
+    you were facing when you pressed recenter" — which you should do while
+    facing the same direction as the robot. Only yaw is corrected: up stays
+    up, so a tilted head does not tilt the world.
+
+    Position needs no correction: the clutch works on *deltas*, and rotating
+    a delta's endpoints rotates the delta — where you stand never mattered.
+
+    Returns None when facing straight up/down (yaw is undefined there — keep
+    the previous correction and try again looking level).
+    """
+    forward = quat.rotate(np.asarray(head_quat_wxyz, dtype=np.float64), np.array([0.0, 0.0, -1.0]))
+    if math.hypot(forward[0], forward[2]) < 0.2:  # nearly vertical gaze
+        return None
+    yaw = math.atan2(-forward[0], -forward[2])  # 0 = already facing XR -z
+    return quat.from_axis_angle(np.array([0.0, 1.0, 0.0]), -yaw)
+
+
 class Clutch:
     """Relative (grab-and-drag) mapping from one controller to one target pose.
 
@@ -75,12 +109,13 @@ class Clutch:
         released ── grip pressed ──▶ engaged (snapshot controller & target)
         engaged  ── grip released ─▶ released (target freezes where it is)
 
-    While engaged, every update applies the controller's *delta since the
-    snapshot* to the target's snapshot:
+    While engaged, every update applies the controller's *position delta
+    since the snapshot* to the target's snapshot:
 
         target.pos  = target₀.pos + scale · (controller.pos − controller₀.pos)
-        target.quat = (controller.quat ⊗ controller₀.quat⁻¹) ⊗ target₀.quat
-                       └── world-frame rotation since grab ──┘
+        target.quat = unchanged, forever (translation-only — see the module
+                      docstring; a ≥ 6-DoF robot would transport the
+                      world-frame rotation since the grab here)
     """
 
     def __init__(self, initial_target: Pose, scale: float = 1.0):
@@ -112,9 +147,5 @@ class Clutch:
 
         assert self._controller0 is not None and self._target0 is not None
         delta_pos = self.scale * (controller.pos - self._controller0.pos)
-        delta_rot = quat.mul(controller.quat, quat.conj(self._controller0.quat))
-        self._target = Pose(
-            self._target0.pos + delta_pos,
-            quat.normalize(quat.mul(delta_rot, self._target0.quat)),
-        )
+        self._target = Pose(self._target0.pos + delta_pos, self._target0.quat.copy())
         return self.target

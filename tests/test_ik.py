@@ -1,10 +1,11 @@
-"""IK convergence tests on the real robot model (headless, no viewer).
+"""IK convergence tests on the real robot models (headless, no viewer).
 
-These need the downloaded model; run ``uv run setup-assets`` first.
+These need the downloaded models; run ``uv run setup-assets`` first.
 They are the closest thing to a proof that the math in ik.py is right:
 ask for a reachable point, step the IK, and measure that we actually get
-there. The K1 tracks position only (4-DoF arms — lesson §5's DoF budget),
-so orientation assertions check that target rotations are *ignored*.
+there. Every test runs on both robots (K1 and T1). Both track position
+only (4-DoF arms — lesson §5's DoF budget), so orientation assertions
+check that target rotations are *ignored*.
 """
 
 import math
@@ -16,18 +17,15 @@ from teleop import ik
 from teleop.robot import SPECS, Robot
 from tests.test_quat import axis_angle
 
-K1 = SPECS["k1"]
-pytestmark = pytest.mark.skipif(
-    not K1.scene_path().exists(),
-    reason="robot model missing — run `uv run setup-assets` first",
-)
-
 DT = 1.0 / 60.0
 
 
-@pytest.fixture()
-def robot() -> Robot:
-    r = Robot(K1)
+@pytest.fixture(params=sorted(SPECS))
+def robot(request) -> Robot:
+    spec = SPECS[request.param]
+    if not spec.scene_path().exists():
+        pytest.skip(f"{spec.name} model missing — run `uv run setup-assets` first")
+    r = Robot(spec)
     r.reset()
     return r
 
@@ -71,7 +69,7 @@ def test_target_rotation_is_ignored(robot: Robot):
 def test_unreachable_target_stays_stable(robot: Robot):
     """Ask for the impossible: no NaNs, no limit violations, graceful straining."""
     frame = robot.targets()
-    frame.left.pos += np.array([0.5, 0.0, 0.5])  # far outside the arm's ~0.39 m reach
+    frame.left.pos += np.array([0.5, 0.0, 0.5])  # far outside either arm's reach (K1 ~0.39 m, T1 ~0.5 m)
     robot.set_targets(frame)
 
     run_ik(robot, 300)

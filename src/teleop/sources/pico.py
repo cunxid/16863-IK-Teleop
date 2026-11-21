@@ -18,6 +18,14 @@ Safety behaviors (relied on by run_real.py — keep them):
 * watchdog — if no message arrived for STALE_AFTER seconds, get_targets()
   returns None (targets freeze) and both clutches disengage;
 * deadman  — the clutch only moves a target while that grip is held.
+
+Recentering (the A/X button): WebXR's "forward" is wherever you looked when
+the VR session began, so if you are not facing the robot's way, your motions
+come out rotated. Pressing A (or X) while facing the robot's forward
+direction recomputes a yaw correction from the headset pose
+(``mapping.recenter_correction``); it is applied to every controller sample
+before the XR→MJ conversion. Recentering also disengages both clutches, so
+nothing jumps — re-grab and continue.
 """
 
 from __future__ import annotations
@@ -34,8 +42,8 @@ from pathlib import Path
 
 import numpy as np
 
-from teleop import REPO_ROOT
-from teleop.mapping import Clutch, Pose, xr_to_mj_pose
+from teleop import REPO_ROOT, quat
+from teleop.mapping import Clutch, Pose, recenter_correction, xr_to_mj_pose
 from teleop.sources import TargetFrame, TargetSource
 
 STALE_AFTER = 0.5  # [s] without data ⇒ hold position (watchdog)
@@ -74,6 +82,8 @@ class PicoSource(TargetSource):
         self._ready = threading.Event()  # set once the server is listening (or failed)
         self._startup_error: BaseException | None = None
         self._active_client = None  # the one headset allowed to drive (first wins)
+        self._correction = np.array([1.0, 0.0, 0.0, 0.0])  # XR yaw fix (identity = none)
+        self._recenter_held = False  # for edge-detecting the A/X button
 
     # ------------------------------------------------------- main-loop side --
 
@@ -92,6 +102,8 @@ class PicoSource(TargetSource):
             f"  1. open the browser at  https://{lan_ip()}:{self.port}\n"
             f"  2. accept the certificate warning (self-signed, see lesson §8)\n"
             f"  3. tap 'Enter VR', then HOLD a grip button to move that hand\n"
+            f"  4. feels rotated? face the robot's forward direction and press\n"
+            f"     A (or X) to re-align 'forward' with your gaze\n"
         )
 
     def get_targets(self, t: float) -> TargetFrame | None:
@@ -180,20 +192,39 @@ class PicoSource(TargetSource):
         drivers (tests and the video renderer script a fake headset through
         here).
         """
+        self._maybe_recenter(msg)
         snap = Snapshot(
             received_at=time.monotonic(),
-            left=parse_hand(msg.get("left")),
-            right=parse_hand(msg.get("right")),
+            left=parse_hand(msg.get("left"), self._correction),
+            right=parse_hand(msg.get("right"), self._correction),
         )
         with self._lock:
             self._latest = snap
 
+    def _maybe_recenter(self, msg: dict) -> None:
+        """A/X pressed (rising edge) ⇒ re-zero "forward" to the current gaze."""
+        pressed = bool(msg.get("recenter")) and msg.get("head") is not None
+        if pressed and not self._recenter_held:
+            x, y, z, w = msg["head"]["quat_xyzw"]  # WebXR order → wxyz
+            correction = recenter_correction(np.array([w, x, y, z]))
+            if correction is None:
+                print("pico: recenter ignored — look level (not up/down) and retry")
+            else:
+                self._correction = correction
+                for clutch in self.clutches.values():  # re-anchor on next grab
+                    clutch.update(grip_held=False, controller=None)
+                print("pico: recentered — 'forward' is now the way you are facing")
+        self._recenter_held = pressed
 
-def parse_hand(hand: dict | None) -> HandSample | None:
+
+def parse_hand(hand: dict | None, correction: np.ndarray) -> HandSample | None:
     if hand is None:
         return None
     x, y, z, w = hand["quat_xyzw"]  # WebXR order; MuJoCo wants w first
-    pose = xr_to_mj_pose(np.array(hand["pos"]), np.array([w, x, y, z]))
+    # Recenter first (a yaw rotation in XR space), then convert to robot axes.
+    pos_xr = quat.rotate(correction, np.array(hand["pos"]))
+    quat_xr = quat.mul(correction, np.array([w, x, y, z]))
+    pose = xr_to_mj_pose(pos_xr, quat_xr)
     return HandSample(pose=pose, grip=bool(hand["grip"]), trigger=float(hand["trigger"]))
 
 

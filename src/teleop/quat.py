@@ -49,6 +49,13 @@ def from_axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
     return out
 
 
+def rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate a 3-vector by a unit quaternion (v expressed in the new frame)."""
+    out = np.empty(3)
+    mujoco.mju_rotVecQuat(out, np.asarray(v, dtype=np.float64), np.asarray(q, dtype=np.float64))
+    return out
+
+
 def from_matrix(mat: np.ndarray) -> np.ndarray:
     """Convert a 3x3 rotation matrix to a (wxyz) quaternion."""
     out = np.empty(4)

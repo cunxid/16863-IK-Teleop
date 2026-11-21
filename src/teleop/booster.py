@@ -1,4 +1,4 @@
-"""The real K1 driver: the last stop of the pipeline, joint targets → motors.
+"""The real Booster driver (K1 and T1): joint targets → motors, over the SDK.
 
 ``run_real.py`` hands this file a dict of arm joint angles 50 times a second.
 This file turns each dict into one Booster-SDK ``LowCmd`` message. The design
@@ -14,6 +14,18 @@ So unlike full low-level mode (``RobotMode.kCustom``), balance never becomes
 our problem, and letting go (``disconnect``) simply hands the arms back to the
 robot — which stays standing.
 
+One driver serves both robots because Booster's SDK speaks one protocol for
+the whole family; the robots differ only in a name table and a motor count:
+
+* **K1** (``JointIndexK1``): 22 motors — head 0–1, arms 2–9, legs 10–21;
+* **T1** (``JointIndex``): 23 motors — head 0–1, arms 2–9, waist 10,
+  legs 11–22.
+
+The arm motors sit at indices 2–9 on both; only the MuJoCo joint *names*
+differ (the K1 spells its shoulder joints with the vendor's ``aa`` prefix,
+the T1 doesn't — see robot.py). Hence the two ``JOINT_TO_MOTOR`` tables
+below, and a ``model`` argument instead of a class per robot.
+
 Three safety details to notice (they mirror lesson §9's layer table):
 
 * targets are re-clamped to joint limits here, even though the IK already
@@ -21,7 +33,8 @@ Three safety details to notice (they mirror lesson §9's layer table):
 * the first ``BLEND_SECONDS`` blend from the *measured* arm pose to the
   commanded one, so the arms can never jump at takeover;
 * non-arm motors get kp = kd = 0: a zero-gain command is "not a command",
-  which is exactly what leaves them to the onboard balance controller.
+  which is exactly what leaves them to the onboard balance controller (on
+  the T1 that includes the waist).
 
 The SDK import lives inside ``connect()`` so everything else (tests, dry-run)
 works without the hardware extra; install it with ``uv sync --extra real``.
@@ -33,9 +46,9 @@ import time
 
 from teleop.real_robot import RealRobot
 
-# Our MuJoCo joint names (vendor-verbatim, from RobotSpec) → the SDK's
-# JointIndexK1 motor numbering: head = 0–1, arms = 2–9, legs = 10–21.
-JOINT_TO_MOTOR: dict[str, int] = {
+# Our MuJoCo joint names (vendor-verbatim, from RobotSpec) → the SDK's motor
+# numbering. K1 = JointIndexK1, T1 = JointIndex; arms are 2–9 on both.
+K1_JOINT_TO_MOTOR: dict[str, int] = {
     "aaleft_shoulder_pitch_joint": 2,
     "left_shoulder_roll_joint": 3,
     "left_elbow_pitch_joint": 4,
@@ -45,7 +58,21 @@ JOINT_TO_MOTOR: dict[str, int] = {
     "right_elbow_pitch_joint": 8,
     "right_elbow_yaw_joint": 9,
 }
-K1_MOTOR_COUNT = 22  # the SDK's kJointCntK1: every LowCmd carries all 22
+T1_JOINT_TO_MOTOR: dict[str, int] = {
+    "left_shoulder_pitch_joint": 2,  # the T1 has no 'aa' prefix here
+    "left_shoulder_roll_joint": 3,
+    "left_elbow_pitch_joint": 4,
+    "left_elbow_yaw_joint": 5,
+    "right_shoulder_pitch_joint": 6,
+    "right_shoulder_roll_joint": 7,
+    "right_elbow_pitch_joint": 8,
+    "right_elbow_yaw_joint": 9,
+}
+
+# Every LowCmd carries ALL of the robot's motors (the SDK's kJointCntK1 /
+# kJointCnt), commanded or not — the uncommanded ones get zero gains.
+JOINT_TO_MOTOR: dict[str, dict[str, int]] = {"k1": K1_JOINT_TO_MOTOR, "t1": T1_JOINT_TO_MOTOR}
+MOTOR_COUNT: dict[str, int] = {"k1": 22, "t1": 23}
 
 # Arm position-control gains. Booster's own arm examples use kp=60 with
 # kd 1.5–3; we take the soft end. 0x0A is the SDK's position-control mode.
@@ -63,6 +90,7 @@ def arm_setpoints(
     targets: dict[str, float],
     start: dict[str, float],
     blend: float,
+    joint_to_motor: dict[str, int],
     limits: dict[str, tuple[float, float]] | None = None,
 ) -> dict[int, float]:
     """One tick of pure math: clamp to limits, blend from the measured start.
@@ -73,7 +101,7 @@ def arm_setpoints(
     absent from ``targets`` is simply not commanded (the robot keeps it).
     """
     out: dict[int, float] = {}
-    for name, motor in JOINT_TO_MOTOR.items():
+    for name, motor in joint_to_motor.items():
         if name not in targets:
             continue
         q = targets[name]
@@ -84,21 +112,26 @@ def arm_setpoints(
     return out
 
 
-class BoosterK1Robot(RealRobot):
-    """Stream arm position targets to a standing, self-balancing Booster K1.
+class BoosterRobot(RealRobot):
+    """Stream arm position targets to a standing, self-balancing Booster robot.
 
-    ``stand=True`` adds a stand-up sequence before takeover: prepare pose
-    (``RobotMode.kPrepare``), then the balance controller
-    (``RobotMode.kWalking``). With ``stand=False`` the robot must already be
-    standing (e.g. brought up with Booster's remote).
+    ``model`` is ``"k1"`` or ``"t1"`` — it selects the joint table and motor
+    count above; everything else is identical. ``stand=True`` adds a stand-up
+    sequence before takeover: prepare pose (``RobotMode.kPrepare``), then the
+    balance controller (``RobotMode.kWalking``). With ``stand=False`` the
+    robot must already be standing (e.g. brought up with Booster's remote).
     """
 
     def __init__(
         self,
+        model: str,
         joint_limits: dict[str, tuple[float, float]] | None = None,
         stand: bool = False,
         iface: str = "",
     ):
+        self.joint_to_motor = JOINT_TO_MOTOR[model]
+        self.motor_count = MOTOR_COUNT[model]
+        self.tag = f"[{model}]"
         self.joint_limits = dict(joint_limits or {})
         self.stand = stand
         self.iface = iface  # network interface to the robot; "" lets DDS pick
@@ -123,7 +156,7 @@ class BoosterK1Robot(RealRobot):
         if self.stand:
             self._stand_up()
         self._read_start_pose()
-        print("[k1] taking over the arms (legs keep balancing on their own)")
+        print(f"{self.tag} taking over the arms (legs keep balancing on their own)")
         self._client.UpperBodyCustomControl(True)
         self._publisher = sdk.B1LowCmdPublisher()
         self._publisher.InitChannel()
@@ -131,13 +164,13 @@ class BoosterK1Robot(RealRobot):
     def _stand_up(self) -> None:
         """Prepare pose, then the balance controller — then the robot stands."""
         mode = self._sdk.RobotMode
-        print(f"[k1] standing up: prepare pose ({PREPARE_SECONDS:.0f} s)...")
+        print(f"{self.tag} standing up: prepare pose ({PREPARE_SECONDS:.0f} s)...")
         self._client.ChangeMode(mode.kPrepare)
         time.sleep(PREPARE_SECONDS)
-        print("[k1] standing up: switching to the balance controller...")
+        print(f"{self.tag} standing up: switching to the balance controller...")
         self._client.ChangeMode(mode.kWalking)
         time.sleep(WALK_SETTLE_SECONDS)
-        print("[k1] standing and balancing")
+        print(f"{self.tag} standing and balancing")
 
     def _read_start_pose(self) -> None:
         """Grab one state message: the measured arm angles seed the soft-start."""
@@ -155,24 +188,25 @@ class BoosterK1Robot(RealRobot):
         subscriber.CloseChannel()
         if not measured:
             raise RuntimeError(
-                f"no robot state after {LOW_STATE_TIMEOUT:.0f} s — is the K1 "
+                f"no robot state after {LOW_STATE_TIMEOUT:.0f} s — is the robot "
                 f"powered on and on this network (try --iface)?"
             )
-        self._q_start = {n: measured[m] for n, m in JOINT_TO_MOTOR.items()}
+        self._q_start = {n: measured[m] for n, m in self.joint_to_motor.items()}
 
     def send_joint_targets(self, targets: dict[str, float]) -> None:
         now = time.monotonic()
         if self._t_first is None:
             self._t_first = now
         blend = min(1.0, (now - self._t_first) / BLEND_SECONDS)
-        setpoints = arm_setpoints(targets, self._q_start, blend, self.joint_limits)
+        setpoints = arm_setpoints(targets, self._q_start, blend,
+                                  self.joint_to_motor, self.joint_limits)
 
         command = self._sdk.LowCmd()
         # PARALLEL matches the motor_state_parallel we read; for the arm
         # motors the two encodings are identical anyway (they differ in legs).
         command.cmd_type = self._sdk.LowCmdType.PARALLEL
         motors = []
-        for index in range(K1_MOTOR_COUNT):
+        for index in range(self.motor_count):
             motor = self._sdk.MotorCmd()
             motor.mode = POSITION_MODE
             motor.dq = 0.0
@@ -198,7 +232,7 @@ class BoosterK1Robot(RealRobot):
                 # Hand the arms back to the onboard controller. The robot
                 # keeps standing — safer than damping, which would drop it.
                 self._client.UpperBodyCustomControl(False)
-                print("[k1] arms handed back; robot keeps standing")
+                print(f"{self.tag} arms handed back; robot keeps standing")
             except Exception as exc:
-                print(f"[k1] could not hand back cleanly: {exc}")
+                print(f"{self.tag} could not hand back cleanly: {exc}")
             self._client = None

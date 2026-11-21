@@ -1,0 +1,40 @@
+<!--
+  Teleop scene: the Booster T1 + two draggable target cubes.
+
+  This is the T1 twin of scene_teleop_k1.xml — read the comments there for
+  why this file must be copied next to the vendor model (meshdir rule) and
+  what a mocap body is. Only three things differ here:
+
+  * it includes T1_23dof.xml instead of K1_22dof.xml,
+  * the camera framing (<statistic>) is raised for the taller robot
+    (the T1 is 1.2 m to the K1's 0.95 m),
+  * the cubes start a little higher (cosmetic only: Robot.reset() parks
+    them exactly on the palms anyway).
+
+  Like the K1 file, Booster's T1_23dof.xml ships its own ground plane,
+  skybox and lights, so we add none.
+-->
+<mujoco model="t1_teleop">
+  <include file="T1_23dof.xml"/>
+
+  <statistic center="0 0 0.65" extent="1.3"/>
+  <visual>
+    <!-- offwidth/offheight: MuJoCo's OFFSCREEN framebuffer is 640x480 unless
+         raised here; render-videos needs it for 720p/1080p frames. -->
+    <global azimuth="140" elevation="-20" offwidth="1920" offheight="1080"/>
+  </visual>
+
+  <worldbody>
+    <!-- Left-hand target (red). contype/conaffinity 0: collides with nothing. -->
+    <body name="left_target" mocap="true" pos="0.25 0.2 0.75">
+      <geom type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0"
+            rgba="0.90 0.25 0.20 0.5"/>
+    </body>
+
+    <!-- Right-hand target (green). -->
+    <body name="right_target" mocap="true" pos="0.25 -0.2 0.75">
+      <geom type="box" size="0.03 0.03 0.03" contype="0" conaffinity="0"
+            rgba="0.20 0.70 0.30 0.5"/>
+    </body>
+  </worldbody>
+</mujoco>

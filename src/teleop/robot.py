@@ -2,24 +2,32 @@
 
 This is the only file that knows robot-specific strings (joint names, body
 names, home pose). Everything else talks to a ``Robot`` through poses and
-joint arrays, so the robot is described by exactly one ``RobotSpec``.
+joint arrays, so each robot is described by exactly one ``RobotSpec``.
 
-The robot is the **Booster K1** (0.95 m, 19.7 kg), using Booster's official
-MuJoCo model from github.com/BoosterRobotics/booster_assets (BSD-3-Clause;
-``uv run setup-assets`` downloads it). 22 actuated joints: 2 head + 4 per arm
-+ 6 per leg — no waist, no wrists, no hands.
+Two robots are specced here, both from Booster Robotics' official MuJoCo
+models in github.com/BoosterRobotics/booster_assets (BSD-3-Clause;
+``uv run setup-assets`` downloads them):
 
-Three K1 facts that shaped this file (all measured, see lesson §2 and §5):
+* the **Booster K1** (0.95 m, 19.7 kg; 22 joints: 2 head + 4 per arm +
+  6 per leg — no waist, no wrists, no hands), the default, and
+* the **Booster T1** (1.2 m, ~30 kg; 23 joints: the K1 layout plus a waist
+  yaw joint — same 4-DoF arms, no wrists, no hands).
 
-* **4-DoF arms** ⇒ a full 6-D pose (position + orientation) is out of the DoF
-  budget, so ``track_orientation=False``: the IK tracks hand *position* only.
-* **Names are copied verbatim**, including the vendor's odd ``aa`` prefixes
-  (``aaleft_shoulder_pitch_joint``, ``aahead_yaw_joint``). Never "fix" vendor
-  names. Also, names can lie about function: on the K1, ``elbow_pitch`` is
-  forearm *pronation* (spins the forearm about its own axis — the hand point
-  doesn't move at all) and ``elbow_yaw`` is the actual elbow *bend*.
-* **No keyframe in the model**, and qpos=0 is a flying T-pose — so the home
-  pose (trunk height for feet-on-floor + relaxed arm angles) is authored
+Facts that shaped these specs (all measured, see lesson §2 and §5):
+
+* **4-DoF arms** (both robots) ⇒ a full 6-D pose (position + orientation) is
+  out of the DoF budget, so ``track_orientation=False``: the IK tracks hand
+  *position* only.
+* **Names are copied verbatim**, including the vendor's odd ``aa`` prefixes —
+  and the two robots disagree about where those go: on the K1 the shoulder
+  and head joints carry them (``aaleft_shoulder_pitch_joint``), on the T1
+  only the head joints do (``aahead_yaw_joint`` but plain
+  ``left_shoulder_pitch_joint``). Never "fix" vendor names. Also, names can
+  lie about function: on BOTH robots, ``elbow_pitch`` is forearm *pronation*
+  (spins the forearm about its own axis — the hand point doesn't move at all)
+  and ``elbow_yaw`` is the actual elbow *bend*.
+* **No keyframe in either model**, and qpos=0 is a flying T-pose — so the
+  home pose (trunk height for feet-on-floor + relaxed arm angles) is authored
   right here in the spec.
 
 One MuJoCo indexing trap worth learning early (lesson §2): a joint has TWO
@@ -56,7 +64,10 @@ class ArmSpec:
 @dataclass(frozen=True)
 class RobotSpec:
     name: str
-    scene_file: str  # relative to assets/
+    scene_file: str  # our teleop scene, relative to assets/ (installed by setup-assets)
+    scene_template: str  # the scene source in assets/, copied next to the vendor model
+    vendor_dir: str  # folder inside the booster_assets repo, e.g. "robots/K1"
+    model_file: str  # the vendor MJCF the scene includes, e.g. "K1_22dof.xml"
     arms: tuple[ArmSpec, ...]
     base_joint: str  # the floating base (freejoint) name
     home_base_height: float  # [m] trunk height that puts the feet on the floor
@@ -66,11 +77,21 @@ class RobotSpec:
     def scene_path(self) -> Path:
         return ASSETS_DIR / self.scene_file
 
+    def model_dir(self) -> Path:
+        """Where setup-assets installs this robot's vendor model."""
+        return self.scene_path().parent
+
+    def model_path(self) -> Path:
+        return self.model_dir() / self.model_file
+
 
 # Booster K1 — all numbers measured on booster_assets K1_22dof.xml.
 K1 = RobotSpec(
     name="k1",
     scene_file="booster_k1/scene_teleop.xml",
+    scene_template="scene_teleop_k1.xml",
+    vendor_dir="robots/K1",
+    model_file="K1_22dof.xml",
     base_joint="world_joint",
     home_base_height=0.552,  # feet exactly on the floor (measured)
     # qpos=0 is a T-pose; this hangs the arms at the sides, slightly forward,
@@ -113,7 +134,58 @@ K1 = RobotSpec(
     ),
 )
 
-SPECS: dict[str, RobotSpec] = {"k1": K1}
+# Booster T1 — all numbers measured on booster_assets T1_23dof.xml. Same
+# layout as the K1 (4-DoF arms, elbow_pitch = pronation, elbow_yaw = bend,
+# no keyframe) with one extra waist yaw joint we leave at 0, and shoulder
+# joints WITHOUT the K1's 'aa' prefix (only the T1 head joints carry it).
+T1 = RobotSpec(
+    name="t1",
+    scene_file="booster_t1/scene_teleop.xml",
+    scene_template="scene_teleop_t1.xml",
+    vendor_dir="robots/T1",
+    model_file="T1_23dof.xml",
+    base_joint="world_joint",
+    home_base_height=0.687,  # feet exactly on the floor (measured)
+    # Same relaxed pose as the K1 — the sign conventions transfer verbatim
+    # (measured: palms land symmetric at x=+0.27 m, z=0.57 m).
+    home_joint_angles=(
+        ("left_shoulder_pitch_joint", -0.25),
+        ("left_shoulder_roll_joint", -1.40),
+        ("left_elbow_yaw_joint", -0.60),
+        ("right_shoulder_pitch_joint", -0.25),
+        ("right_shoulder_roll_joint", 1.40),
+        ("right_elbow_yaw_joint", 0.60),
+    ),
+    track_orientation=False,  # 4-DoF arms, like the K1: position-only tracking
+    arms=(
+        ArmSpec(
+            name="left",
+            joint_names=(
+                "left_shoulder_pitch_joint",  # no 'aa' prefix on the T1
+                "left_shoulder_roll_joint",
+                "left_elbow_pitch_joint",  # forearm pronation (nullspace joint)
+                "left_elbow_yaw_joint",  # the actual elbow bend
+            ),
+            ee_body="left_elbow_yaw_link",
+            ee_offset=(0.0, 0.216, 0.0),  # hand-cap sphere center (measured)
+            mocap_body="left_target",
+        ),
+        ArmSpec(
+            name="right",
+            joint_names=(
+                "right_shoulder_pitch_joint",
+                "right_shoulder_roll_joint",
+                "right_elbow_pitch_joint",
+                "right_elbow_yaw_joint",
+            ),
+            ee_body="right_elbow_yaw_link",
+            ee_offset=(0.0, -0.216, 0.0),  # mirrored: forearm runs along -y
+            mocap_body="right_target",
+        ),
+    ),
+)
+
+SPECS: dict[str, RobotSpec] = {"k1": K1, "t1": T1}
 
 
 @dataclass
@@ -140,7 +212,7 @@ class Robot:
         if not path.exists():
             raise FileNotFoundError(
                 f"robot model not found: {path}\n"
-                f"Download it first:  uv run setup-assets"
+                f"Download it first:  uv run setup-assets --robot {spec.name}"
             )
         self.spec = spec
         self.model = mujoco.MjModel.from_xml_path(str(path))
@@ -169,7 +241,7 @@ class Robot:
     def reset(self) -> None:
         """Authored home pose, then park each target exactly on its hand.
 
-        The K1 model ships no keyframe, so "home" is built by hand: default
+        Neither Booster model ships a keyframe, so "home" is built by hand: default
         state, base lowered until the feet touch the floor, then the authored
         joint angles (everything unnamed stays 0 — the legs are straight).
         """

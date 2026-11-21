@@ -92,6 +92,35 @@ def test_watchdog_goes_stale_without_messages(source: PicoSource):
     assert source.get_targets(0.0) is None  # nothing ever received ⇒ hold
 
 
+def test_recenter_realigns_forward_with_the_gaze():
+    """Stand turned 90° left, press A: pushing 'your forward' is robot +x again.
+
+    No server here — messages go straight into ingest(), like the fake headset
+    in render_videos. Without the recenter, a user facing XR -x who pushes
+    'forward' (-x) would drag the target sideways (robot +y); after pressing
+    A/X with that gaze, the same push must come out as robot +x.
+    """
+    import math
+
+    initial = TargetFrame(
+        left=Pose(np.array([0.3, 0.2, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])),
+        right=Pose(np.array([0.3, -0.2, 1.0]), np.array([1.0, 0.0, 0.0, 0.0])),
+    )
+    src = PicoSource(initial, scale=1.0, port=9999)
+    # Head turned 90° left about XR up (+y): quaternion xyzw = (0, sin45°, 0, cos45°).
+    head = {"quat_xyzw": [0.0, math.sin(math.pi / 4), 0.0, math.cos(math.pi / 4)]}
+
+    # Press A while facing that way (grip also held at the XR origin).
+    src.ingest({"t": 0.0, "left": hand([0, 0, 0]), "right": None, "head": head, "recenter": True})
+    frame = src.get_targets(0.0)  # clutch engages here, on the corrected pose
+    assert np.allclose(frame.left.pos, [0.3, 0.2, 1.0], atol=1e-9)
+
+    # Push 10 cm along the user's forward (XR -x, since they face -x).
+    src.ingest({"t": 0.1, "left": hand([-0.1, 0, 0]), "right": None, "head": head, "recenter": False})
+    frame = src.get_targets(0.1)
+    assert np.allclose(frame.left.pos, [0.4, 0.2, 1.0], atol=1e-9)  # robot +x ✓
+
+
 def test_second_headset_is_rejected(source: PicoSource):
     """One headset drives; a second simultaneous client is turned away (1008)."""
 

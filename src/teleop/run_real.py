@@ -39,8 +39,9 @@ def main() -> None:
     parser.add_argument("--source", choices=REAL_SOURCES, default="pico",
                         help="where targets come from (default: VR controllers; "
                              "'mouse' is sim-only — use test-in-sim for that)")
-    parser.add_argument("--robot-spec", choices=sorted(SPECS), default="k1",
-                        help="kinematic model used as the IK brain")
+    parser.add_argument("--robot-spec", choices=sorted(SPECS), default=None,
+                        help="kinematic model used as the IK brain (default: match "
+                             "--robot, or k1 for dryrun)")
     parser.add_argument("--rate", type=float, default=50.0, help="command rate [Hz]")
     parser.add_argument("--duration", type=float, default=0.0,
                         help="stop after this many seconds (0 = run until Ctrl+C)")
@@ -48,13 +49,23 @@ def main() -> None:
                         help="pico mode: meters of hand motion per meter of controller motion")
     parser.add_argument("--port", type=int, default=8443, help="pico mode: HTTPS/WSS port")
     parser.add_argument("--stand", action="store_true",
-                        help="k1 mode: command the robot to stand up and balance "
+                        help="hardware mode: command the robot to stand up and balance "
                              "(prepare pose, then the walking controller) before "
                              "taking over the arms; omit if it is already standing")
     parser.add_argument("--iface", default="",
-                        help="k1 mode: network interface to the robot "
+                        help="hardware mode: network interface to the robot "
                              "(default: let the SDK's DDS layer choose)")
     args = parser.parse_args()
+
+    # The IK brain must be the same robot as the body it drives: a K1 brain
+    # produces K1 joint names, which a T1 driver would not recognize. With no
+    # explicit --robot-spec, simply follow --robot (dryrun accepts anything).
+    if args.robot_spec is None:
+        args.robot_spec = args.robot if args.robot in SPECS else "k1"
+    if args.robot in SPECS and args.robot_spec != args.robot:
+        parser.error(f"--robot-spec {args.robot_spec} is a different robot than "
+                     f"--robot {args.robot}; the IK brain must match the body "
+                     f"(omit --robot-spec to match automatically)")
 
     # Safety gates (AGENTS.md invariants), checked before anything moves:
     # 1. only the pico source has a deadman + watchdog, so it is the only
@@ -71,8 +82,9 @@ def main() -> None:
                      f"oscillate at full speed instead of tracking); "
                      f"use a rate above {gain / 2.0:.0f} Hz — the default is 50")
     # 3. --stand physically moves a robot, so it only makes sense on one.
-    if args.stand and args.robot != "k1":
-        parser.error("--stand commands a physical stand-up and requires --robot k1")
+    if args.stand and args.robot not in SPECS:
+        parser.error("--stand commands a physical stand-up and requires a "
+                     "hardware robot (--robot k1 or --robot t1)")
 
     brain = Robot(SPECS[args.robot_spec])
     brain.reset()

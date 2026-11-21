@@ -8,8 +8,8 @@ Implementations:
 
 * ``DryRunRobot`` — the default. No hardware: it just prints what *would*
   be sent, at a readable rate. `uv run test-in-real` therefore always works.
-* ``BoosterK1Robot`` — the real Booster K1 driver, in its own module
-  ``booster_k1.py``: the robot stands and balances itself while we command
+* ``BoosterRobot`` — the real Booster driver (K1 and T1), in its own module
+  ``booster.py``: the robot stands and balances itself while we command
   only the arms. Nothing else in the codebase knows the difference.
 """
 
@@ -61,7 +61,7 @@ class DryRunRobot(RealRobot):
         print(f"[dry-run] disconnected after {self._n_sent} commands")
 
 
-ROBOT_NAMES = ("dryrun", "k1")
+ROBOT_NAMES = ("dryrun", "k1", "t1")
 
 
 def make_robot(
@@ -70,13 +70,13 @@ def make_robot(
     stand: bool = False,
     iface: str = "",
 ) -> RealRobot:
-    """Build a robot backend. The k1-only options are harmless for dryrun."""
+    """Build a robot backend. The hardware-only options are harmless for dryrun."""
     if name == "dryrun":
         return DryRunRobot()
-    if name == "k1":
-        # Imported here, not at the top: booster_k1 imports RealRobot from
+    if name in ("k1", "t1"):
+        # Imported here, not at the top: booster imports RealRobot from
         # this module, so a top-level import would be circular.
-        from teleop.booster_k1 import BoosterK1Robot
+        from teleop.booster import BoosterRobot
 
-        return BoosterK1Robot(joint_limits=joint_limits, stand=stand, iface=iface)
+        return BoosterRobot(name, joint_limits=joint_limits, stand=stand, iface=iface)
     raise ValueError(f"unknown robot {name!r}; pick one of {ROBOT_NAMES}")

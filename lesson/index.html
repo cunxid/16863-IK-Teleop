@@ -72,7 +72,10 @@ actually works</strong>: put on a PICO headset, squeeze the grip button on the
 controller, and the <strong>Booster K1</strong> humanoid's hands — in
 simulation, and later on the real machine — mirror your hand motion. More
 importantly, by the end you can explain why every line of code is the way it
-is.</p>
+is. And because every robot-specific fact lives in one spec object, the system
+supports a second robot, the taller <strong>Booster T1</strong>, as a payoff
+you get almost for free (§2.5): every command in this lesson accepts
+<code>--robot-spec t1</code>.</p>
 
 <svg class="pipeline" viewBox="0 0 980 240" role="img" aria-label="System pipeline diagram">
   <defs>
@@ -143,9 +146,10 @@ updating the lesson and the check fails</strong> (the rule is in AGENTS.md).</p>
 <table>
 <tr><th>File</th><th>One-line job</th><th>Section</th></tr>
 <tr><td><code class="file">pyproject.toml</code></td><td>Project definition: deps, four command entry points, uv_build</td><td><a href="#s1">§1</a></td></tr>
-<tr><td><code class="file">src/teleop/tools/setup_assets.py</code></td><td>Download the Booster K1 model, install the scene</td><td><a href="#s2">§2</a></td></tr>
-<tr><td><code class="file">assets/scene_teleop.xml</code></td><td>Scene: robot + floor + two mocap target cubes</td><td><a href="#s2">§2</a>, <a href="#s4">§4</a></td></tr>
-<tr><td><code class="file">src/teleop/robot.py</code></td><td>Load model, resolve joint indices, read/write targets, reset</td><td><a href="#s2">§2</a>, <a href="#s3">§3</a></td></tr>
+<tr><td><code class="file">src/teleop/tools/setup_assets.py</code></td><td>Download the robot models (K1, T1), install the scenes</td><td><a href="#s2">§2</a></td></tr>
+<tr><td><code class="file">assets/scene_teleop_k1.xml</code></td><td>K1 scene: robot + floor + two mocap target cubes</td><td><a href="#s2">§2</a>, <a href="#s4">§4</a></td></tr>
+<tr><td><code class="file">assets/scene_teleop_t1.xml</code></td><td>T1 scene: same pattern, taller framing</td><td><a href="#s2">§2.5</a></td></tr>
+<tr><td><code class="file">src/teleop/robot.py</code></td><td>Load model, resolve joint indices, read/write targets, reset; one RobotSpec per robot</td><td><a href="#s2">§2</a>, <a href="#s3">§3</a></td></tr>
 <tr><td><code class="file">src/teleop/quat.py</code></td><td>Quaternion helpers (the repo's only math library)</td><td><a href="#s3">§3</a></td></tr>
 <tr><td><code class="file">src/teleop/ik.py</code></td><td>Differential IK: pose error → joint velocities</td><td><a href="#s5">§5</a></td></tr>
 <tr><td><code class="file">src/teleop/run_sim.py</code></td><td><code>test-in-sim</code> entry point: a 4-line main loop</td><td><a href="#s6">§6</a></td></tr>
@@ -155,12 +159,12 @@ updating the lesson and the check fails</strong> (the rule is in AGENTS.md).</p>
 <tr><td><code class="file">src/teleop/sources/pico.py</code></td><td>PC-side server: receive poses, run the clutch, emit targets</td><td><a href="#s8">§8</a></td></tr>
 <tr><td><code class="file">src/teleop/run_real.py</code></td><td><code>test-in-real</code> entry point: same brain + a real robot</td><td><a href="#s9">§9</a></td></tr>
 <tr><td><code class="file">src/teleop/real_robot.py</code></td><td>Hardware interface: DryRun default + robot factory</td><td><a href="#s9">§9</a></td></tr>
-<tr><td><code class="file">src/teleop/booster_k1.py</code></td><td>The real K1 driver: robot balances itself, we drive the arms</td><td><a href="#s9">§9</a></td></tr>
+<tr><td><code class="file">src/teleop/booster.py</code></td><td>The real Booster driver (K1 + T1): robot balances itself, we drive the arms</td><td><a href="#s9">§9</a></td></tr>
 <tr><td><code class="file">src/teleop/tools/check_lesson.py</code></td><td>The checker that keeps code and lesson in sync</td><td><a href="#s0">§0</a></td></tr>
 <tr><td><code class="file">src/teleop/tools/render_videos.py</code></td><td>Render demo MP4s offscreen (no display needed)</td><td><a href="#s6">§6</a></td></tr>
 </table>
 
-<p>There is also <code>tests/</code> (31 windowless unit tests) and three
+<p>There is also <code>tests/</code> (47 windowless unit tests) and three
 <code>__init__.py</code> files with no teaching content.
 <code class="file">src/teleop/tools/check_lesson.py</code> itself is ~60 lines:
 it enumerates the files above and fails unless each path string appears in this
@@ -222,10 +226,11 @@ resolves to identical versions.</div>
 <p>A robot's "body file" (link sizes, joint axes, limits, display meshes) is
 usually a <strong>URDF</strong> (the ROS-world standard) or an
 <strong>MJCF</strong> (MuJoCo's own XML). Booster Robotics publishes both for
-the K1 in its official asset repository,
+its whole robot family in one official asset repository,
 <a href="https://github.com/BoosterRobotics/booster_assets">booster_assets</a>
 (BSD-3-Clause) — so the simulation drives <em>the same robot you deploy on</em>,
-no stand-in needed.</p>
+no stand-in needed. We build the course around the <strong>K1</strong> and add
+its bigger sibling, the <strong>T1</strong>, in §2.5.</p>
 
 <p>We use the MJCF, <code>K1_22dof.xml</code>, and it's worth knowing why: MuJoCo
 <em>can</em> load the shipped URDF directly, but the URDF import silently drops
@@ -235,17 +240,24 @@ MuJoCo work. The K1 in numbers: 0.95 m, ~19.7 kg, 22 actuated joints =
 2 head + 4 per arm + 6 per leg; <strong>no waist, no wrists, no hands</strong>.
 Hold onto that "4 per arm" — it reshapes the IK in §5.</p>
 
-<h3>2.2 Downloading the model: src/teleop/tools/setup_assets.py</h3>
-<p>21 MB of mesh files don't belong in git, so <code>uv run setup-assets</code>
-downloads them. It uses git's sparse checkout to fetch only the K1 folder,
-not Booster's other robots or motion data:</p>
+<h3>2.2 Downloading the models: src/teleop/tools/setup_assets.py</h3>
+<p>~20 MB of mesh files per robot don't belong in git, so
+<code>uv run setup-assets</code> downloads them (all robots by default;
+<code>--robot k1</code> or <code>--robot t1</code> for just one). It uses git's
+sparse checkout to fetch only the folders we need, not Booster's other robots
+or motion data:</p>
 
 <pre><code>git clone --depth 1 --filter=blob:none --sparse https://github.com/BoosterRobotics/booster_assets.git
-git sparse-checkout set robots/K1      # just this one robot (~21 MB)</code></pre>
+git sparse-checkout set robots/K1 robots/T1   # just our robots (~20 MB each)</code></pre>
 
-<p>Then it copies our scene file <code class="file">assets/scene_teleop.xml</code>
-<strong>next to K1_22dof.xml</strong>. Why must it sit there? A classic MuJoCo
-trap:</p>
+<p>Which folders those are is <em>not</em> written in this tool — it reads them
+from the <code>RobotSpec</code> objects of 2.4 (<code>vendor_dir</code>,
+<code>model_file</code>), so teaching it about a new robot means touching
+robot.py only. Then it copies each robot's scene file
+(<code class="file">assets/scene_teleop_k1.xml</code>,
+<code class="file">assets/scene_teleop_t1.xml</code>)
+<strong>next to the vendor XML</strong> it includes. Why must it sit there? A
+classic MuJoCo trap:</p>
 
 <div class="box pitfall"><span class="tag">Pitfall!</span>
 Relative asset paths in MJCF (K1_22dof.xml says <code>meshdir="meshes/"</code>)
@@ -256,7 +268,7 @@ breaks. Hence: <em>the scene must live beside K1_22dof.xml</em>, and
 setup-assets copies it there for you. (Try it: copy the scene one directory up
 and load it — mesh after mesh fails to resolve.)</div>
 
-<h3>2.3 The scene file: assets/scene_teleop.xml</h3>
+<h3>2.3 The scene file: assets/scene_teleop_k1.xml</h3>
 <p>Scene = robot + <strong>two mocap target cubes</strong> (the protagonists of
 §4). Unusually, Booster's K1_22dof.xml already ships a complete mini-scene of
 its own — a ground plane, a skybox, two lights — so our wrapper adds
@@ -288,11 +300,15 @@ load, <strong>resolve names into numeric indices</strong>, and own the target
 read/write.</p>
 
 <p>Every robot-specific string is gathered into one <code>RobotSpec</code> —
-this is the entire secret of "swap robots by editing one place":</p>
+this is the entire secret of "swap robots by editing one place" (§2.5 cashes
+it in):</p>
 
 <pre><code>K1 = RobotSpec(
     name="k1",
-    scene_file="booster_k1/scene_teleop.xml",
+    scene_file="booster_k1/scene_teleop.xml",   # our scene, after setup-assets installs it
+    scene_template="scene_teleop_k1.xml",       # ...and its source in assets/
+    vendor_dir="robots/K1",                     # where it lives in booster_assets (§2.2)
+    model_file="K1_22dof.xml",                  # the vendor MJCF the scene includes
     base_joint="world_joint",
     home_base_height=0.552,     # trunk height that puts the feet on the floor (measured)
     home_joint_angles=(         # the model ships NO keyframe — we author home here
@@ -350,6 +366,49 @@ Mixing them up is <em>the</em> classic off-by-one bug in MuJoCo code.</div>
 finishes. Then print all 23 joint names (1 free + 22 hinges) and find the 8
 that belong to the arms:
 <code>uv run python -c "import mujoco; m = mujoco.MjModel.from_xml_path('assets/booster_k1/K1_22dof.xml'); print([m.joint(i).name for i in range(m.njnt)])"</code></div>
+
+<h3>2.5 The payoff: a second robot, the Booster T1</h3>
+<p>Everything robot-specific sits in one spec — so let's prove it. The
+<strong>Booster T1</strong> is the K1's bigger sibling: 1.2 m, 23 joints —
+the K1's layout plus one <strong>waist yaw</strong> joint (which our teleop
+leaves alone, like the head and legs). Its arms are again 4-DoF with no
+wrists, so everything §5 says about the DoF budget carries over unchanged.
+Supporting it took exactly three things, and <em>zero</em> changes to the IK,
+the sources, or the main loops:</p>
+
+<ol>
+<li><strong>One <code>RobotSpec</code></strong> (<code>T1</code> in robot.py)
+    with freshly measured numbers: feet-on-floor trunk height 0.687 m (vs the
+    K1's 0.552), palm center 0.216 m along the forearm (vs 0.18), and the
+    same relaxed home pose — the sign conventions transfer verbatim.</li>
+<li><strong>One scene file</strong>,
+    <code class="file">assets/scene_teleop_t1.xml</code>: identical to the K1
+    scene except it includes <code>T1_23dof.xml</code> and raises the camera
+    framing for the taller robot.</li>
+<li><strong>One joint→motor table</strong> in the real driver (§9) — eight
+    entries.</li>
+</ol>
+
+<p>Measuring the spec is a half-hour of the same probing you did in the
+"Try it" above, and it re-confirmed both §2.4 naming pitfalls in new ways.
+The <code>aa</code> prefixes moved: the K1 writes
+<code>aaleft_shoulder_pitch_joint</code>, the T1 writes plain
+<code>left_shoulder_pitch_joint</code> — but keeps <code>aahead_yaw_joint</code>.
+(Copy vendor names verbatim; never assume two robots from the same vendor
+spell alike.) And the elbow lie is hereditary: on the T1 too,
+<code>elbow_pitch</code> is pure forearm pronation — rotate it by a full
+radian and the palm point moves <strong>0.0 mm</strong> (measured) — while
+<code>elbow_yaw</code> is the real bend. The T1 model also ships no keyframe,
+so its home pose is authored in the spec, exactly like the K1's.</p>
+
+<div class="box try"><span class="tag">Try it</span>
+<code>uv run test-in-sim --robot-spec t1</code> — the taller robot draws the
+same figure-8 (tracking error settles at 5–10 mm, same as the K1; the
+headless smoke test passes for both). Every entry point takes the flag:
+<code>test-in-sim</code>, <code>test-in-real</code>,
+<code>render-videos</code>; <code>setup-assets</code> calls it
+<code>--robot</code> and also accepts <code>all</code>. A third robot would
+follow the same recipe — spec, scene, driver table.</div>
 
 <!-- ================================================================ s3 -->
 <h2 id="s3">§3 Quaternions and forward kinematics: where is the hand now?</h2>
@@ -473,7 +532,8 @@ gentler the motion. Smoothing is built in.</p>
 
 <div class="box pitfall"><span class="tag">The DoF budget (why position only)</span>
 A full pose is <strong>6</strong> numbers: 3 position + 3 orientation. Tracking
-both therefore needs at least 6 joints per arm. The K1 has <strong>4</strong> —
+both therefore needs at least 6 joints per arm. The K1 and the T1 both have
+<strong>4</strong> —
 and one of them (elbow_pitch, the pronation) spins the forearm about its own
 axis, so it cannot move the hand point at all: effectively 3 positional DoF +
 1 spare. Orientation is simply not in the budget; asking for it anyway makes
@@ -604,10 +664,13 @@ to 5–10 mm while drawing the 8. Then deliberately set <code>pos_gain</code> to
 robot: <code>uv run render-videos</code>
 (<code class="file">src/teleop/tools/render_videos.py</code>) runs the same
 loop against MuJoCo's offscreen renderer and writes three MP4s into
-<code>video/</code> — the figure-8 demo, a scripted fake-headset clip that
-makes the clutch visible (a controller sphere flies away while the robot holds
-still), and a workspace-edge stress clip for §5's damping discussion. Handy
-for slides, too.</p>
+<code>video/</code>, named after the robot
+(<code>--robot-spec</code>; e.g. <code>k1_01_figure8.mp4</code>,
+<code>t1_01_figure8.mp4</code>) — the figure-8 demo, a scripted fake-headset
+clip that makes the clutch visible (a controller sphere flies away while the
+robot holds still), and a workspace-edge stress clip for §5's damping
+discussion. The camera framing scales off the spec's trunk height, so both
+robots are shot correctly with no per-robot code. Handy for slides, too.</p>
 
 <!-- ================================================================ s7 -->
 <h2 id="s7">§7 The first target source: a scripted figure-8 (src/teleop/sources/trajectory.py)</h2>
@@ -670,10 +733,11 @@ session.requestAnimationFrame(function onFrame(time, frame) {
     const pose = frame.getPose(input.gripSpace, refSpace);  // may be null — guard it!
     const p = pose.transform.position;      // meters; x right, y up, z backward
     const q = pose.transform.orientation;   // quaternion, xyzw order (!)
-    const buttons = input.gamepad.buttons;  // xr-standard: [0]=trigger [1]=grip
+    const buttons = input.gamepad.buttons;  // xr-standard: [0]=trigger [1]=grip [4]=A/X
     ...pack into JSON...
   }
-  ws.send(JSON.stringify({ t, left, right }));          // stream to the PC
+  const head = frame.getViewerPose(refSpace);  // the headset pose (for recentering, 8.3)
+  ws.send(JSON.stringify({ t, left, right, head, recenter }));  // stream to the PC
 });</code></pre>
 <p>The page does three more considerate things: it checks
 <code>isSessionSupported</code> before offering the button; it attaches a WebGL
@@ -687,10 +751,11 @@ WebXR exists only in a <strong>HTTPS</strong> (secure) context, and
 certificate on a LAN, so we use a <strong>self-signed certificate</strong>: the
 browser warns once; tap "Advanced → Proceed". The page and the WebSocket share
 one port, so accepting the warning once unblocks both (the wss certificate
-exception rides along with the same origin). For wired debugging there's a
-zero-certificate trick: <code>adb reverse tcp:8443 tcp:8443</code>, then open
-<code>http://localhost:8443</code> on the headset — localhost counts as a
-secure context.</div>
+exception rides along with the same origin). For wired debugging (no shared
+Wi-Fi needed at all): <code>adb reverse tcp:8443 tcp:8443</code>, then open
+<code>https://localhost:8443</code> on the headset — the server speaks TLS
+only, and the generated certificate lists <code>localhost</code> as a valid
+name, so it is the same one-time warning as over Wi-Fi.</div>
 
 <h3>8.2 Coordinate frames: two worlds shake hands (src/teleop/mapping.py)</h3>
 <p>WebXR: x right, y up, <strong>−z forward</strong>. MuJoCo: <strong>x
@@ -720,14 +785,42 @@ target never jumps. Exactly like lifting a mouse to re-center it on the pad.</p>
         if just gripped:  snapshot controller₀ and target₀
         # while held, every frame:
         target.pos  = target₀.pos + scale · (controller.pos − controller₀.pos)
-        target.quat = (controller.quat ⊗ controller₀.quat⁻¹) ⊗ target₀.quat
-        #              └── world-frame rotation since the grab ──┘</code></pre>
+        target.quat = unchanged — the clutch is translation-only</code></pre>
 <p><code>scale</code> is the ergonomics knob: 0.5 = you move 10 cm, the robot
 moves 5 cm (precision work); 2.0 = big workspace. The <code>--scale</code> CLI
-flag feeds straight into this (pico source only). Note the clutch transports
-the full pose — position <em>and</em> rotation — even though the K1's
-position-only IK uses just the position half; plug in a robot with ≥ 6-DoF
-arms and the rotation half starts mattering, with no clutch changes.</p>
+flag feeds straight into this (pico source only). The clutch is deliberately
+<strong>translation-only</strong>: our robots track hand <em>position</em>
+(the §5 DoF budget), so transporting wrist rotation would only spin the
+target cubes confusingly while the IK ignored it. For a robot with ≥ 6-DoF
+arms you would transport the world-frame rotation since the grab,
+<code>(controller.quat ⊗ controller₀.quat⁻¹) ⊗ target₀.quat</code> — one line
+here, exercise 8 in §10.</p>
+
+<h3>8.3b Recentering: press A when "forward" feels wrong</h3>
+<p>The fixed frame conversion of 8.2 hides an assumption: it maps XR's −z to
+the robot's +x, but XR's −z is <em>wherever you faced when the VR session
+started</em>. Stand turned 90° from the robot's heading and every push comes
+out sideways — the single most disorienting failure in VR teleop, and
+calibration-free relative mapping cannot detect it by itself.</p>
+<p>The fix is one button: face the robot's forward direction and
+<strong>press A (or X)</strong>. The page streams the headset pose along with
+the controllers; on the button's rising edge, the server computes the yaw of
+your gaze and stores the opposite rotation
+(<code>mapping.recenter_correction</code>), which is applied to every raw
+controller sample before the XR→MJ conversion. Three design points worth
+noticing:</p>
+<ul>
+<li><strong>Yaw only.</strong> The correction rotates about XR's up axis —
+    your gaze projected to the horizontal plane. A tilted or nodding head
+    must not tilt the robot's world (looking straight up/down makes yaw
+    undefined, so the server ignores the press and tells you to look level).</li>
+<li><strong>No position correction needed.</strong> The clutch works on
+    deltas, and rotating a delta's endpoints rotates the delta — where you
+    <em>stand</em> never mattered, only which way you <em>face</em>.</li>
+<li><strong>No jumps.</strong> Recentering disengages both clutches, exactly
+    like releasing the grip: re-grab and continue in the fixed frame. The view
+    flashes blue so you know it took effect.</li>
+</ul>
 
 <h3>8.4 The PC-side server: src/teleop/sources/pico.py</h3>
 <p>One port does two jobs: a plain HTTPS GET returns the page above, and
@@ -741,7 +834,7 @@ background thread; when the 60 Hz main loop comes asking, it reads only the
     if snap is None or time.monotonic() - snap.received_at &gt; STALE_AFTER:
         ... disengage both clutches ...
         return None            # watchdog: data stream died → targets freeze, robot holds
-    # per hand: XR→MJ conversion → feed the clutch → new target
+    # per hand: recenter yaw fix (8.3b) → XR→MJ conversion → clutch → new target
     return TargetFrame(left=..., right=...)</code></pre>
 <p>On first run it generates a self-signed certificate into
 <code>.certs/</code> with <code>cryptography</code> (SAN includes your LAN IP)
@@ -811,19 +904,24 @@ name:</p>
     def disconnect(self): ...                      # stop motion; must be safe to call twice</code></pre>
 <p>The default implementation, <code>DryRunRobot</code>, prints instead of
 moving, so <code>uv run test-in-real</code> is always safe to run. The real
-driver lives in its own module and is selected with <code>--robot k1</code>.</p>
+driver lives in its own module and is selected with <code>--robot k1</code> or
+<code>--robot t1</code> (the IK brain's <code>--robot-spec</code> then follows
+automatically — a K1 brain emits K1 joint names, which a T1 would not
+recognize, so a mismatch is refused at the argparse gate).</p>
 
-<h3>The real driver: src/teleop/booster_k1.py</h3>
+<h3>The real driver: src/teleop/booster.py</h3>
 
 <p>Booster's SDK is the optional hardware extra
 (<code>uv sync --extra real</code>; Linux-only binary wheels, which is why it
-is not a core dependency). The driver is built around one key robot feature,
-<code>UpperBodyCustomControl</code>: <strong>the robot keeps balancing itself,
-we only borrow the arms</strong>. The onboard controller never stops owning
-the legs, so balance never becomes our problem — and "letting go" just hands
-the arms back to a robot that is still standing. (The alternative,
-<code>RobotMode.kCustom</code>, is full low-level control of all 22 motors:
-you would inherit the balance problem along with them.)</p>
+is not a core dependency). One driver serves both robots, because the SDK
+speaks one protocol for the whole family — the robots differ only in a joint
+name table and a motor count. The driver is built around one key robot
+feature, <code>UpperBodyCustomControl</code>: <strong>the robot keeps
+balancing itself, we only borrow the arms</strong>. The onboard controller
+never stops owning the legs, so balance never becomes our problem — and
+"letting go" just hands the arms back to a robot that is still standing. (The
+alternative, <code>RobotMode.kCustom</code>, is full low-level control of
+every motor: you would inherit the balance problem along with them.)</p>
 
 <p><code>connect()</code> runs in three phases:</p>
 
@@ -843,11 +941,12 @@ you would inherit the balance problem along with them.)</p>
     <code>LowCmd</code> messages at 50 Hz.</li>
 </ol>
 
-<p>Each <code>LowCmd</code> carries all 22 motors, but only the 8 arm entries
-carry gains (kp=60, kd=1.5, Booster's own example values). Every other motor
-is sent kp = kd = 0 — a zero-gain command is "no command", which is exactly
-what leaves those motors to the onboard balance controller. Two more details
-worth copying into any driver you ever write:</p>
+<p>Each <code>LowCmd</code> carries all of the robot's motors (22 on the K1,
+23 on the T1), but only the 8 arm entries carry gains (kp=60, kd=1.5,
+Booster's own example values). Every other motor is sent kp = kd = 0 — a
+zero-gain command is "no command", which is exactly what leaves those motors
+to the onboard balance controller (on the T1 that includes the waist). Two
+more details worth copying into any driver you ever write:</p>
 
 <ul>
 <li><strong>Soft start</strong>: for the first 2 s, commands blend from the
@@ -858,13 +957,18 @@ worth copying into any driver you ever write:</p>
     A driver never trusts its caller.</li>
 </ul>
 
-<p><code>JOINT_TO_MOTOR</code> maps our MuJoCo joint names to the SDK's
-<code>JointIndexK1</code> motor indices (head = 0–1, arms = 2–9, legs = 10–21).
-Our joint names come verbatim from the model file, <code>aa</code> prefixes
-and all, so the dict keys line up with <code>robot.joint_targets()</code>
-automatically. A different robot later is just another <code>RobotSpec</code>
-in robot.py plus one driver module — the IK, the sources, and the main loops
-don't change by a single line.</p>
+<p><code>JOINT_TO_MOTOR</code> holds one table per robot, mapping our MuJoCo
+joint names to the SDK's motor indices: <code>JointIndexK1</code> for the K1
+(head = 0–1, arms = 2–9, legs = 10–21) and <code>JointIndex</code> for the T1
+(head = 0–1, arms = 2–9, waist = 10, legs = 11–22). Happily the arms sit at
+motors 2–9 on both — only the <em>names</em> differ (the K1's
+<code>aa</code>-prefixed shoulders again). The names come verbatim from the
+model files, so each table's keys line up with
+<code>robot.joint_targets()</code> automatically — and a unit test pins each
+table against its <code>RobotSpec</code>. That is the whole §2.5 recipe
+finished: a new robot is one <code>RobotSpec</code>, one scene file, and one
+eight-entry table here — the IK, the sources, and the main loops don't change
+by a single line.</p>
 
 <div class="box pitfall"><span class="tag">Before the first real run</span>
 Keep a hand on the e-stop. Verify your robot's firmware accepts
@@ -882,7 +986,9 @@ because a damped robot falls.</div>
 ③ With a robot on the LAN:
 <code>uv sync --extra real</code>, then
 <code>uv run test-in-real --robot k1 --stand</code> — the K1 stands up,
-balances, and your controllers drive its hands.
+balances, and your controllers drive its hands
+(<code>--robot t1</code> for a T1: same flow, the T1 joint table and the
+T1 IK brain are picked automatically).
 ④ Thought experiment: why does the watchdog freeze the <em>targets</em> rather
 than emergency-stopping the motors? (Hint: what does an arm do when it
 suddenly loses power?)</div>
@@ -921,13 +1027,20 @@ suddenly loses power?)</div>
     <code>TargetSource</code> is all it takes; that's what the interface is
     for.</li>
 <li><strong>Drive the real robot</strong>: bring up
-    <code>booster_k1.py</code> on hardware (§9 walks through the driver).
-    First run: verify <code>JOINT_TO_MOTOR</code> against the SDK's
-    <code>JointIndexK1</code> enum, halve <code>ARM_KP</code>, keep a hand on
-    the e-stop, and only then try
-    <code>uv run test-in-real --robot k1 --stand</code>. Then extend the
-    driver: ramp the gains back up, and add the head motors (0–1) once you
-    have done exercise 4.</li>
+    <code>booster.py</code> on hardware (§9 walks through the driver).
+    First run: verify <code>JOINT_TO_MOTOR</code> against the SDK's enums
+    (<code>JointIndexK1</code> for the K1, <code>JointIndex</code> for the
+    T1), halve <code>ARM_KP</code>, keep a hand on the e-stop, and only then
+    try <code>uv run test-in-real --robot k1 --stand</code> (or
+    <code>--robot t1</code>). Then extend the driver: ramp the gains back up,
+    and add the head motors (0–1) once you have done exercise 4.</li>
+<li><strong>Rotation through the clutch</strong>: the clutch is
+    translation-only (§8.3). Re-add rotation transport —
+    <code>target.quat = (controller.quat ⊗ controller₀.quat⁻¹) ⊗
+    target₀.quat</code> in <code>Clutch.update</code> — and verify with the
+    viewer that the target cubes now follow your wrist. Then explain why the
+    robot's hands still don't rotate (hint: §5's DoF budget), and what robot
+    you'd need for them to.</li>
 </ol>
 
 <h3>Further reading</h3>
@@ -935,8 +1048,8 @@ suddenly loses power?)</div>
 <li>MuJoCo docs (<a href="https://mujoco.readthedocs.io">mujoco.readthedocs.io</a>):
     the XML format, <code>mj_jac</code>, mocap bodies.</li>
 <li><a href="https://github.com/BoosterRobotics/booster_assets">booster_assets</a>:
-    the official K1 model we download (BSD-3-Clause, © BoosterRobotics) — also
-    holds 50 Hz example motion data for the K1.</li>
+    the official K1 and T1 models we download (BSD-3-Clause, © BoosterRobotics)
+    — also holds 50 Hz example motion data.</li>
 <li>Booster's developer portal (docs.booster.tech) and the SDK
     (<a href="https://github.com/BoosterRobotics/booster_robotics_sdk">booster_robotics_sdk</a>,
     Apache-2.0; <code>pip install booster_robotics_sdk_python</code>).</li>
@@ -950,7 +1063,8 @@ suddenly loses power?)</div>
 <p>The ik-teleop lesson · this file is the single code↔teaching mapping required
 by AGENTS.md; every code change must update it, and
 <code>uv run check-lesson</code> enforces that. Code is MIT-licensed; the
-Booster K1 model is BSD-3-Clause (its LICENSE file ships with the download).</p>
+Booster K1 and T1 models are BSD-3-Clause (a LICENSE file ships with each
+download).</p>
 </footer>
 
 </main>

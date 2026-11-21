@@ -34,7 +34,10 @@
   <p id="status">Connecting to the server…</p>
   <p class="hint">Once in VR: <b>hold the grip button (side of the controller)</b>
      and the robot's hand follows your motion; release and it freezes.
-     Green view = currently grabbing. Exit VR with the headset's system button.</p>
+     Motions feel rotated? Face the robot's forward direction and
+     <b>press A (or X)</b> to re-align "forward" with your gaze.
+     Green view = grabbing; blue flash = recentered.
+     Exit VR with the headset's system button.</p>
 
 <script>
 "use strict";
@@ -96,6 +99,7 @@ async function run(session) {
     // 1. Read both controllers.
     const hands = { left: null, right: null };
     let gripping = false;
+    let recenter = false;
     for (const input of session.inputSources) {
       if (!input.gripSpace || !input.gamepad) continue;
       const pose = frame.getPose(input.gripSpace, refSpace);
@@ -103,9 +107,10 @@ async function run(session) {
 
       const p = pose.transform.position;     // meters; x right, y up, z backward
       const q = pose.transform.orientation;  // quaternion, xyzw order (!)
-      const buttons = input.gamepad.buttons; // xr-standard: [0]=trigger [1]=grip
+      const buttons = input.gamepad.buttons; // xr-standard: [0]=trigger [1]=grip [4]=A/X
       const grip = buttons.length > 1 && buttons[1].pressed;
       gripping = gripping || grip;
+      recenter = recenter || (buttons.length > 4 && buttons[4].pressed);
 
       hands[input.handedness] = {
         pos: [p.x, p.y, p.z],
@@ -115,16 +120,24 @@ async function run(session) {
       };
     }
 
+    // 1b. The headset pose: the server uses its yaw to recenter "forward"
+    //     when A/X is pressed (mapping.recenter_correction, lesson §8).
+    const viewer = frame.getViewerPose(refSpace);
+    const hq = viewer ? viewer.transform.orientation : null;
+    const head = hq ? { quat_xyzw: [hq.x, hq.y, hq.z, hq.w] } : null;
+
     // 2. Stream to Python (time in seconds; the server only keeps the latest).
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ t: time / 1000, left: hands.left, right: hands.right }));
+      ws.send(JSON.stringify({ t: time / 1000, left: hands.left, right: hands.right,
+                               head: head, recenter: recenter }));
     }
 
     // 3. Visual feedback: clear both eyes to a single color.
     const layer = session.renderState.baseLayer;
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-    if (gripping) gl.clearColor(0.05, 0.35, 0.12, 1); // green: robot is following
-    else gl.clearColor(0.02, 0.02, 0.05, 1);          // dark: released
+    if (recenter) gl.clearColor(0.08, 0.20, 0.45, 1);      // blue: recentering
+    else if (gripping) gl.clearColor(0.05, 0.35, 0.12, 1); // green: robot is following
+    else gl.clearColor(0.02, 0.02, 0.05, 1);               // dark: released
     gl.clear(gl.COLOR_BUFFER_BIT);
   });
 }

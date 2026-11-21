@@ -1,17 +1,18 @@
 """Render demo videos offscreen (``uv run render-videos``) — no display needed.
 
-Three clips land in ``video/``:
+Three clips land in ``video/``, named after the robot (``--robot-spec``,
+default k1 — e.g. ``k1_01_figure8.mp4``):
 
-* ``01_figure8.mp4`` — the default demo: lift-in, then both hands trace a
-  figure-8 (exactly what ``test-in-sim`` shows in the viewer).
-* ``02_pico_clutch.mp4`` — a scripted "fake headset" drives the real Pico
-  pipeline (``PicoSource.ingest`` → frame conversion → clutch → IK). The small
-  sphere is the controller: bright while the grip is held, dim when released.
-  Watch the release phase: the sphere flies away, the robot does not move —
-  and after the re-grab, motion resumes with no jump. That is the clutch.
-* ``03_workspace_edge.mp4`` — the targets sweep far beyond the arms' reach and
-  come back: damped least squares strains gracefully instead of exploding
-  (lesson §5's damping at work).
+* ``<robot>_01_figure8.mp4`` — the default demo: lift-in, then both hands
+  trace a figure-8 (exactly what ``test-in-sim`` shows in the viewer).
+* ``<robot>_02_pico_clutch.mp4`` — a scripted "fake headset" drives the real
+  Pico pipeline (``PicoSource.ingest`` → frame conversion → clutch → IK). The
+  small sphere is the controller: bright while the grip is held, dim when
+  released. Watch the release phase: the sphere flies away, the robot does not
+  move — and after the re-grab, motion resumes with no jump. That is the clutch.
+* ``<robot>_03_workspace_edge.mp4`` — the targets sweep far beyond the arms'
+  reach and come back: damped least squares strains gracefully instead of
+  exploding (lesson §5's damping at work).
 
 Rendering uses MuJoCo's offscreen ``Renderer``. ``MUJOCO_GL=egl`` is set
 automatically (an env var you set yourself wins; ``--gl osmesa`` if your
@@ -38,13 +39,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render the demo videos offscreen.")
     parser.add_argument("--gl", choices=("egl", "osmesa", "glfw"), default="egl",
                         help="offscreen GL backend (a preset MUJOCO_GL env var wins)")
+    parser.add_argument("--robot-spec", default="k1",
+                        help="which robot to render (a RobotSpec name from robot.py)")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=30)
     args = parser.parse_args()
 
-    # Must happen before the first `import mujoco` anywhere in the process.
+    # Must happen before the first `import mujoco` anywhere in the process —
+    # which is also why robot.py (it imports mujoco) is imported only below.
     os.environ.setdefault("MUJOCO_GL", args.gl)
+
+    from teleop.robot import SPECS
+
+    if args.robot_spec not in SPECS:
+        parser.error(f"--robot-spec {args.robot_spec!r}: unknown robot; "
+                     f"pick one of {', '.join(sorted(SPECS))}")
 
     VIDEO_DIR.mkdir(exist_ok=True)
     render_figure8(args)
@@ -60,7 +70,7 @@ def render_figure8(args: argparse.Namespace) -> None:
     from teleop.robot import SPECS, Robot
     from teleop.sources.trajectory import TrajectorySource
 
-    robot = Robot(SPECS["k1"])
+    robot = Robot(SPECS[args.robot_spec])
     robot.reset()
     source = TrajectorySource(robot.targets())
 
@@ -75,14 +85,17 @@ def render_pico_clutch(args: argparse.Namespace) -> None:
     from teleop.robot import SPECS, Robot
     from teleop.sources.pico import PicoSource
 
-    robot = Robot(SPECS["k1"])
+    robot = Robot(SPECS[args.robot_spec])
     robot.reset()
     # The server is never started: we feed messages straight into ingest(),
     # which is everything after the network — conversion, clutch, watchdog.
     source = PicoSource(robot.targets(), scale=1.0, port=9999)
 
-    # Where to *display* the controller spheres (schematic, beside the robot).
-    display_anchor = {"left": np.array([0.0, 0.45, 0.95]), "right": np.array([0.0, -0.45, 0.95])}
+    # Where to *display* the controller spheres (schematic, beside the robot,
+    # at roughly chest height — which scales with the trunk height).
+    anchor_z = robot.spec.home_base_height + 0.4
+    display_anchor = {"left": np.array([0.0, 0.45, anchor_z]),
+                      "right": np.array([0.0, -0.45, anchor_z])}
     latest_hands: dict[str, dict | None] = {"left": None, "right": None}
 
     def drive(t: float) -> None:
@@ -143,7 +156,7 @@ def render_workspace_edge(args: argparse.Namespace) -> None:
     from teleop.robot import SPECS, Robot
     from teleop.sources.trajectory import TrajectorySource
 
-    robot = Robot(SPECS["k1"])
+    robot = Robot(SPECS[args.robot_spec])
     robot.reset()
     lift = TrajectorySource(robot.targets(), amplitude=0.0)  # lift-in only, no 8
     lifted = lift.get_targets(lift.ramp_time)  # where the hands settle
@@ -174,11 +187,14 @@ def record(args: argparse.Namespace, filename: str, robot, drive, duration: floa
 
     from teleop import ik
 
-    camera = mujoco.MjvCamera()  # framed for the 0.95 m Booster K1
-    camera.azimuth, camera.elevation, camera.distance = 140.0, -20.0, 1.8
-    camera.lookat[:] = [0.05, 0.0, 0.55]
+    # Framing scales with the robot's trunk height (K1: 0.552 m → distance
+    # 1.8 m; the taller T1 gets a wider shot automatically).
+    camera = mujoco.MjvCamera()
+    camera.azimuth, camera.elevation = 140.0, -20.0
+    camera.distance = 3.3 * robot.spec.home_base_height
+    camera.lookat[:] = [0.05, 0.0, robot.spec.home_base_height]
 
-    path = VIDEO_DIR / filename
+    path = VIDEO_DIR / f"{robot.spec.name}_{filename}"
     renderer = mujoco.Renderer(robot.model, height=args.height, width=args.width)
     writer = imageio.get_writer(str(path), fps=args.fps, quality=8)
     steps_per_frame = max(1, round(SIM_HZ / args.fps))

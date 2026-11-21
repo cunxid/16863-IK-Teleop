@@ -1,5 +1,7 @@
 <!--
   Teleop scene: the Booster K1 + two draggable target cubes.
+  (The T1 version of this file is scene_teleop_t1.xml — same pattern, only
+  the included model and the camera framing differ.)
 
   `setup-assets` copies this file INTO assets/booster_k1/, next to
   K1_22dof.xml. It must live there: MuJoCo resolves relative asset paths

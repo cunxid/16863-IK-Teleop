@@ -1,7 +1,9 @@
 # ik-teleop — VR teleoperation of a humanoid's upper body (a teaching project)
 
-Move a PICO VR controller; the **Booster K1** humanoid's hand follows — via
-differential inverse kinematics (IK), with MuJoCo as the backend.
+Move a PICO VR controller; a **Booster humanoid**'s hand follows — via
+differential inverse kinematics (IK), with MuJoCo as the backend. Two robots
+are supported out of the box: the **K1** (0.95 m, the default) and the
+**T1** (1.2 m) — pick one with `--robot-spec k1|t1`.
 
 This is a **teaching project**: the code is written for students with no
 robotics background, and every file maps to a section of the lesson,
@@ -18,7 +20,7 @@ Requires [uv](https://docs.astral.sh/uv/)
 
 ```bash
 uv sync             # 1. install everything (creates the virtualenv automatically)
-uv run setup-assets # 2. download the robot model (Booster K1, official booster_assets)
+uv run setup-assets # 2. download the robot models (Booster K1 + T1, official booster_assets)
 uv run test-in-sim  # 3. a MuJoCo window opens: both hands draw a figure-8 ✨
 ```
 
@@ -26,6 +28,7 @@ uv run test-in-sim  # 3. a MuJoCo window opens: both hands draw a figure-8 ✨
 
 ```bash
 uv run test-in-sim                   # scripted trajectory: hands draw an 8; proves the whole pipeline
+uv run test-in-sim --robot-spec t1   # the same demo on the Booster T1 (default: k1)
 uv run test-in-sim --source mouse    # mouse: double-click a red/green target cube, Ctrl+drag to move it
 uv run test-in-sim --source pico     # VR: the terminal prints a URL ↓
 uv run test-in-sim --headless        # no window; prints tracking error (servers/CI)
@@ -36,7 +39,10 @@ browser, open the `https://<PC-IP>:8443` URL printed in the terminal, accept
 the self-signed-certificate warning once, and tap **Enter VR**.
 **Hold the grip button (side of the controller)** to make that hand follow
 you; release and it freezes (a clutch design — prevents accidents and lets you
-re-position your arm comfortably between grabs).
+re-position your arm comfortably between grabs). If motions feel rotated,
+face the robot's forward direction and **press A (or X)** — "forward" is
+re-aligned to your gaze (the view flashes blue). Only controller *position*
+drives the robot; wrist rotation is ignored (4-DoF arms track position only).
 
 ## test-in-real (driving a real robot)
 
@@ -45,11 +51,13 @@ uv run test-in-real                      # default dry-run: prints the joint com
 uv run test-in-real --source trajectory  # rehearse the real-robot pipeline without a headset
 uv sync --extra real                     # install Booster's SDK (hardware-only extra, Linux)
 uv run test-in-real --robot k1 --stand   # the real K1: stand up, balance, then VR-drive the arms
+uv run test-in-real --robot t1 --stand   # the same on a real T1 (the IK brain follows --robot)
 ```
 
-With `--robot k1` the robot keeps balancing itself — the driver enables
-`UpperBodyCustomControl` and commands only the 8 arm motors; `--stand` first
-runs the stand-up sequence (prepare pose → balance controller). See lesson §9.
+With `--robot k1` or `--robot t1` the robot keeps balancing itself — the
+driver enables `UpperBodyCustomControl` and commands only the 8 arm motors;
+`--stand` first runs the stand-up sequence (prepare pose → balance
+controller). See lesson §9.
 
 The real-robot loop always keeps four safety layers: joint limits, per-joint
 speed caps, the grip deadman switch, and a stale-VR-data watchdog (see
@@ -69,7 +77,7 @@ than `dryrun` requires `--source pico` (the only source with a deadman), and
 | `src/teleop/run_sim.py` | `test-in-sim` entry point | §6 |
 | `src/teleop/run_real.py` | `test-in-real` entry point | §9 |
 | `src/teleop/real_robot.py` | hardware interface (DryRun default) | §9 |
-| `src/teleop/booster_k1.py` | real K1 driver: robot balances, we drive the arms | §9 |
+| `src/teleop/booster.py` | real Booster driver (K1 + T1): robot balances, we drive the arms | §9 |
 
 ## Development
 
@@ -84,12 +92,14 @@ Contributor rules live in [AGENTS.md](AGENTS.md) — the most important one:
 
 ## FAQ
 
-- **Which robot?** The **Booster K1** (0.95 m, 22 DoF), using Booster
-  Robotics' official MuJoCo model from `BoosterRobotics/booster_assets`
-  (BSD-3) — the sim drives the same robot you deploy on. Its arms are 4-DoF
-  (no wrists), so the IK tracks hand *position* only (lesson §5 explains the
-  DoF budget). Everything robot-specific lives in one `RobotSpec` in
-  `robot.py`; a different robot is one new spec.
+- **Which robot?** The **Booster K1** (0.95 m, 22 DoF, the default) or the
+  **Booster T1** (1.2 m, 23 DoF — the K1 layout plus a waist joint), both
+  using Booster Robotics' official MuJoCo models from
+  `BoosterRobotics/booster_assets` (BSD-3) — the sim drives the same robot
+  you deploy on. Both have 4-DoF arms (no wrists), so the IK tracks hand
+  *position* only (lesson §5 explains the DoF budget). Everything
+  robot-specific lives in one `RobotSpec` per robot in `robot.py`; a
+  different robot is one new spec.
 - **Browser says "not secure"?** WebXR requires HTTPS; on a LAN we use a
   self-signed certificate — tap "Advanced → Proceed". The certificate is
   generated into `.certs/` on first run.

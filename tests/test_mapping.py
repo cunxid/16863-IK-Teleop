@@ -1,11 +1,11 @@
-"""Unit tests for teleop.mapping: frame conversion and the clutch."""
+"""Unit tests for teleop.mapping: frame conversion, recentering, the clutch."""
 
 import math
 
 import numpy as np
 
 from teleop import quat
-from teleop.mapping import XR_TO_MJ_MAT, Clutch, Pose, xr_to_mj_pose
+from teleop.mapping import XR_TO_MJ_MAT, Clutch, Pose, recenter_correction, xr_to_mj_pose
 from tests.test_quat import IDENTITY, axis_angle
 
 
@@ -36,6 +36,36 @@ def test_xr_rotation_about_up_axis_becomes_rotation_about_mj_z():
     assert np.allclose(p.quat, axis_angle([0, 0, 1], 0.8), atol=1e-9)
 
 
+# ------------------------------------------------------------- recenter ---
+
+
+def test_recenter_identity_when_already_facing_forward():
+    correction = recenter_correction(IDENTITY)
+    assert np.allclose(quat.rotate(correction, [0, 0, -1]), [0, 0, -1], atol=1e-9)
+
+
+def test_recenter_makes_the_users_forward_the_xr_forward():
+    # Head turned 90° left (about XR up): the user's "push forward" is XR -x.
+    head = axis_angle([0, 1, 0], math.pi / 2)
+    correction = recenter_correction(head)
+    # Corrected, that push must be XR -z (which the fixed map sends to MJ +x).
+    assert np.allclose(quat.rotate(correction, [-0.1, 0, 0]), [0, 0, -0.1], atol=1e-9)
+    assert np.allclose(XR_TO_MJ_MAT @ quat.rotate(correction, [-0.1, 0, 0]), [0.1, 0, 0], atol=1e-9)
+
+
+def test_recenter_corrects_yaw_only_up_stays_up():
+    # Turned 90° left AND looking 30° down: the yaw fix must not tilt the world.
+    head = quat.mul(axis_angle([0, 1, 0], math.pi / 2), axis_angle([1, 0, 0], -0.5))
+    correction = recenter_correction(head)
+    assert np.allclose(quat.rotate(correction, [0, 1, 0]), [0, 1, 0], atol=1e-9)  # up
+    assert np.allclose(quat.rotate(correction, [-1, 0, 0]), [0, 0, -1], atol=1e-9)  # fwd
+
+
+def test_recenter_refuses_a_vertical_gaze():
+    looking_straight_down = axis_angle([1, 0, 0], -math.pi / 2)
+    assert recenter_correction(looking_straight_down) is None
+
+
 # ---------------------------------------------------------------- clutch ---
 
 
@@ -53,13 +83,14 @@ def test_clutch_translates_by_scaled_delta():
     assert np.allclose(out.pos, [1.0 + 0.1, 0.0, -0.2])
 
 
-def test_clutch_rotation_composes_in_world_frame():
+def test_clutch_ignores_controller_rotation():
+    """Translation-only: wild wrist rotation must never change the target quat."""
     q0 = axis_angle([0, 0, 1], 0.5)
     c = Clutch(pose([0, 0, 0], q0))
     c.update(True, pose([0, 0, 0]))
-    out = c.update(True, pose([0, 0, 0], axis_angle([1, 0, 0], 0.3)))
-    expected = quat.mul(axis_angle([1, 0, 0], 0.3), q0)  # world delta ∘ initial
-    assert np.allclose(out.quat, expected, atol=1e-9)
+    out = c.update(True, pose([0.1, 0, 0], axis_angle([1, 0, 0], 0.3)))
+    assert np.allclose(out.quat, q0, atol=1e-9)  # orientation kept
+    assert np.allclose(out.pos, [0.1, 0, 0])  # translation still applies
 
 
 def test_clutch_no_jump_on_regrab():
@@ -74,9 +105,3 @@ def test_clutch_no_jump_on_regrab():
     assert np.allclose(out.pos, [0.1, 0.0, 0.2])
 
 
-def test_clutch_half_pi_yaw_feels_the_same_after_regrab():
-    """Rotations also anchor to the new grab (regression for snapshot logic)."""
-    c = Clutch(pose([0, 0, 0]))
-    c.update(True, pose([0, 0, 0], axis_angle([0, 0, 1], 1.0)))  # grab at yaw=1.0
-    out = c.update(True, pose([0, 0, 0], axis_angle([0, 0, 1], 1.0)))  # no further motion
-    assert np.allclose(out.quat, IDENTITY, atol=1e-9)  # target never rotated
